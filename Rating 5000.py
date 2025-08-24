@@ -382,6 +382,18 @@ class MovieProcessor:
                         break
                 if not country_mapped:
                     unmapped_countries.add(country)
+                    # Store country with movie info for better tracking
+                    if not hasattr(self, 'unmapped_countries_movies'):
+                        self.unmapped_countries_movies = {}
+                    if country not in self.unmapped_countries_movies:
+                        self.unmapped_countries_movies[country] = []
+                    movie_info = {
+                        'title': info.get('Title', 'Unknown'),
+                        'year': info.get('Year', 'Unknown'),
+                        'url': film_url
+                    }
+                    if movie_info not in self.unmapped_countries_movies[country]:
+                        self.unmapped_countries_movies[country].append(movie_info)
                     print_to_csv(f"DEBUG: {info.get('Title')} has unmapped country: {country}")
 
 
@@ -2343,7 +2355,15 @@ class LetterboxdScraper:
             with open('Outputs/unknown_countries.txt', 'w', encoding='utf-8') as f:
                 f.write("Countries found in movies that are not mapped to any continent:\n\n")
                 for country in sorted(unmapped_countries):
-                    f.write(f"{country}\n")
+                    f.write(f"{country}")
+                    # Add movie information if available
+                    if hasattr(self, 'unmapped_countries_movies') and country in self.unmapped_countries_movies:
+                        movies = self.unmapped_countries_movies[country]
+                        if movies:
+                            # Show first movie URL as reference
+                            first_movie = movies[0]
+                            f.write(f" (from: {first_movie['title']} ({first_movie['year']}) - {first_movie['url']})")
+                    f.write("\n")
 
     def log_error_to_csv(self, error_message: str):
         """Log error messages to update_results.csv."""
