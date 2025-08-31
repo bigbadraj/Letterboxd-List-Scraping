@@ -60,7 +60,7 @@ def print_to_csv(message: str):
 
 # Configure locale and constants
 locale.setlocale(locale.LC_ALL, 'en_US.UTF-8')
-MAX_MOVIES = 7000 # Currently using 7000
+MAX_MOVIES = 5 # Currently using 7000
 MAX_MOVIES_5000 = 5000
 MAX_MOVIES_MPAA = 250
 MAX_MOVIES_RUNTIME = 250
@@ -373,12 +373,14 @@ class MovieProcessor:
         # Process continent data if we have countries
         countries = info.get('Countries', [])
         if countries:
+            added_to_continent = set()  # Track which continents the film has been added to
             for country in countries:
                 country_mapped = False
                 for continent, country_list in CONTINENTS_COUNTRIES.items():
-                    if country in country_list:
+                    if country in country_list and continent not in added_to_continent:
                         if add_to_continent_stats(continent, info.get('Title'), info.get('Year'), info.get('tmdbID'), film_url):
                             self.update_continent_statistics(continent, film_url)
+                            added_to_continent.add(continent)  # Mark the continent as processed
                         country_mapped = True
                         break
                 if not country_mapped:
