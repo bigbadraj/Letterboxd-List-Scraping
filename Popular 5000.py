@@ -60,7 +60,7 @@ def print_to_csv(message: str):
 
 # Configure locale and constants
 locale.setlocale(locale.LC_ALL, 'en_US.UTF-8')
-MAX_MOVIES = 5 # Currently using 7000
+MAX_MOVIES = 70 # Currently using 7000
 MAX_MOVIES_5000 = 5000
 MAX_MOVIES_MPAA = 250
 MAX_MOVIES_RUNTIME = 250
@@ -403,10 +403,8 @@ class MovieProcessor:
                     }
                     if movie_info not in self.unmapped_countries_movies[country]:
                         self.unmapped_countries_movies[country].append(movie_info)
-                    print_to_csv(f"DEBUG: {info.get('Title')} has unmapped country: {country}")
-
-
-            
+                    print_to_csv(f"🌎 {info.get('Title')} ({info.get('Year')}) has unmapped country: {country}")
+           
     def update_whitelist(self, film_title: str, release_year: str, movie_data: Dict, film_url: str = None) -> bool:
         """Update whitelist with movie data using URL as primary identifier."""
         if not film_url:
