@@ -102,7 +102,7 @@ def main():
         ("Rating 5000.py", "Letterboxd Rating Films Scraper"),
         ("Genre 250s.py", "Top 250 Genres Scraper"),
         ("Update Letterboxd Lists.py", "Update Lists on Letterboxd"),
-        ("Update Common JSONs.py", "Update Common JSONs"),
+        ("Update JSONs.py", "Update JSONs"),
     ]
 
     total_scripts = len(scripts)

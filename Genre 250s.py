@@ -818,15 +818,12 @@ MAX_MOVIES_stats = {
 
 def add_to_MAX_MOVIES(film_title: str, release_year: str, tmdb_id: str, film_url: str) -> bool:
     """
-    Centralized function to add a movie to MAX_MOVIES_stats if it's not already present.
-    Returns True if the movie was added, False if it was already present or if we've reached the limit.
+    Centralized function to add a movie to MAX_MOVIES_stats.
+    Returns True if the movie was added, False if we've reached the limit.
+    Note: Duplicate checking is now done earlier in the process.
     """
 
     if not film_url:
-        return False
-
-    # Check if movie already exists by URL
-    if any(movie['Link'] == film_url for movie in MAX_MOVIES_stats['film_data']):
         return False
 
     # Check if we've reached the limit
@@ -865,6 +862,11 @@ class LetterboxdScraper:
             film_title = info.get('Title')  # Only for display purposes
             release_year = info.get('Year')  # Only for display purposes
             tmdb_id = info.get('tmdbID')  # Only for display purposes
+            
+            # Check if URL has already been processed in this scrape session
+            if any(movie['Link'] == film_url for movie in MAX_MOVIES_stats['film_data']):
+                print_to_csv(f"⚠️ {film_title} was already processed in this session. Skipping.")
+                return False
                         
             # Process using URL as primary identifier
             if self.processor.is_whitelisted(None, None, film_url):
@@ -1295,6 +1297,11 @@ class LetterboxdScraper:
                     print_to_csv(f"❌ {film_title} was not added due to being blacklisted.")
                     self.processor.rejected_data.append([film_title, release_year, None, 'Blacklisted'])
                     self.rejected_movies_count += 1  # Increment rejected counter
+                    continue
+                
+                # Check if URL has already been processed in this scrape session (duplicate prevention)
+                if any(movie['Link'] == film_url for movie in MAX_MOVIES_stats['film_data']):
+                    print_to_csv(f"⚠️ {film_title} was already processed in this session. Skipping.")
                     continue
                 
                 # First check for exact matches in whitelist

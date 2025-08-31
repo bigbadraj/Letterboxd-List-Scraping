@@ -947,15 +947,12 @@ max_movies_5000_stats = {
 
 def add_to_max_movies_5000(film_title: str, release_year: str, tmdb_id: str, film_url: str) -> bool:
     """
-    Centralized function to add a movie to max_movies_5000_stats if it's not already present.
-    Returns True if the movie was added, False if it was already present or if we've reached the limit.
+    Centralized function to add a movie to max_movies_5000_stats.
+    Returns True if the movie was added, False if we've reached the limit.
+    Note: Duplicate checking is now done earlier in the process.
     """
 
     if not film_url:
-        return False
-
-    # Check if movie already exists by URL
-    if any(movie['Link'] == film_url for movie in max_movies_5000_stats['film_data']):
         return False
 
     # Check if we've reached the limit
@@ -985,11 +982,6 @@ def add_to_continent_stats(continent: str, film_title: str, release_year: str, t
     Returns:
         bool: True if the movie was added, False otherwise
     """
-    # Check if movie already exists
-    if any(movie['Title'] == film_title and movie['Year'] == release_year 
-           for movie in continent_stats[continent]['film_data']):
-        return False
-
     # Determine the max limit based on the continent
     max_limit = (
         MAX_MOVIES_AFRICA if continent == 'Africa' else
@@ -1025,10 +1017,6 @@ def add_to_runtime_stats(category: str, film_title: str, release_year: str, tmdb
     Returns:
         bool: True if the movie was added, False otherwise
     """
-    # Check if movie already exists by URL
-    if any(movie['Link'] == film_url for movie in runtime_stats[category]['film_data']):
-        return False
-
     # Determine the max limit based on the category
     max_limit = (
         MAX_180 if category == '180_Minutes_or_Greater' else
@@ -1063,10 +1051,6 @@ def add_to_mpaa_stats(rating: str, film_title: str, release_year: str, tmdb_id: 
     Returns:
         bool: True if the movie was added, False otherwise
     """
-    # Check if movie already exists by URL
-    if any(movie['Link'] == film_url for movie in mpaa_stats[rating]['film_data']):
-        return False
-
     # Determine the max limit based on the rating
     max_limit = (
         MAX_MOVIES_G if rating == 'G' else
@@ -1111,6 +1095,8 @@ class LetterboxdScraper:
             film_title = info.get('Title')  # Only for display purposes
             release_year = info.get('Year')  # Only for display purposes
             tmdb_id = info.get('tmdbID')  # Only for display purposes
+            
+
                         
             # Process using URL as primary identifier
             if self.processor.is_whitelisted(None, None, film_url):
@@ -1533,6 +1519,11 @@ class LetterboxdScraper:
                     print_to_csv(f"❌ {film_title} was not added due to being blacklisted.")
                     self.processor.rejected_data.append([film_title, release_year, None, 'Blacklisted'])
                     self.rejected_movies_count += 1  # Increment rejected counter
+                    continue
+                
+                # Check if URL has already been processed in this scrape session (duplicate prevention)
+                if any(movie['Link'] == film_url for movie in max_movies_5000_stats['film_data']):
+                    print_to_csv(f"⚠️ {film_title} was already processed in this session. Skipping.")
                     continue
                 
                 # First check for exact matches in whitelist
