@@ -91,7 +91,6 @@ CHUNK_SIZE = 1900
 # File paths
 BLACKLIST_PATH = os.path.join(LIST_DIR, 'blacklist.xlsx')
 WHITELIST_PATH = os.path.join(LIST_DIR, 'whitelist.xlsx')
-INCOMPLETE_STATS_WHITELIST_PATH = os.path.join(LIST_DIR, 'Incomplete_Stats_Whitelist.xlsx')
 ZERO_REVIEWS_PATH = os.path.join(LIST_DIR, 'Zero_Reviews.xlsx')  # Add new path
 
 # Load credentials
@@ -141,12 +140,9 @@ class MovieProcessor:
         self.session = RequestsSession()
         self.whitelist = None
         self.whitelist_lookup = {}
-        self.incomplete_stats_whitelist = None
-        self.incomplete_stats_lookup = {}
         self.zero_reviews = None
         self.zero_reviews_lookup = {}
         self.load_whitelist()
-        self.load_incomplete_stats_whitelist()
         self.load_zero_reviews()
         
         # Update blacklist loading to include the Link column
@@ -264,46 +260,6 @@ class MovieProcessor:
             print_to_csv("Creating new whitelist file.")
             self.whitelist = pd.DataFrame(columns=['Title', 'Year', 'Information', 'Link'])
             self.whitelist.to_excel(WHITELIST_PATH, index=False)
-
-    def load_incomplete_stats_whitelist(self):
-        """Load and initialize the incomplete stats whitelist data."""
-        try:
-            if os.path.exists(INCOMPLETE_STATS_WHITELIST_PATH):
-                # Try to read without specifying names first to see the actual structure
-                temp_df = pd.read_excel(INCOMPLETE_STATS_WHITELIST_PATH, header=0)
-                
-                # Check if we have the expected columns
-                if 'Link' in temp_df.columns and 'Title' in temp_df.columns:
-                    # File has the right structure, use it
-                    self.incomplete_stats_whitelist = temp_df
-                else:
-                    # File exists but has wrong structure, create new one
-                    print_to_csv("Incomplete stats whitelist file has wrong structure. Creating new file.")
-                    self.incomplete_stats_whitelist = pd.DataFrame(columns=['Title', 'Year', 'Link'])
-                    self.incomplete_stats_whitelist.to_excel(INCOMPLETE_STATS_WHITELIST_PATH, index=False)
-                    return
-            else:
-                print_to_csv("Incomplete_Stats_Whitelist.xlsx not found. Creating new file.")
-                self.incomplete_stats_whitelist = pd.DataFrame(columns=['Title', 'Year', 'Link'])
-                self.incomplete_stats_whitelist.to_excel(INCOMPLETE_STATS_WHITELIST_PATH, index=False)
-                return
-            
-            # Normalize the data
-            self.incomplete_stats_whitelist['Title'] = self.incomplete_stats_whitelist['Title'].apply(normalize_text)
-            self.incomplete_stats_whitelist['Year'] = self.incomplete_stats_whitelist['Year'].astype(str).str.strip()
-            self.incomplete_stats_whitelist['Link'] = self.incomplete_stats_whitelist['Link'].fillna('')
-            
-            # Create a lookup dictionary for faster matching using URLs as keys
-            self.incomplete_stats_lookup = {}
-            for idx, row in self.incomplete_stats_whitelist.iterrows():
-                if row['Link']:  # Only store entries with URLs
-                    self.incomplete_stats_lookup[row['Link']] = idx
-                
-        except Exception as e:
-            print_to_csv(f"Error loading incomplete stats whitelist: {str(e)}")
-            print_to_csv("Creating new incomplete stats whitelist file.")
-            self.incomplete_stats_whitelist = pd.DataFrame(columns=['Title', 'Year', 'Link'])
-            self.incomplete_stats_whitelist.to_excel(INCOMPLETE_STATS_WHITELIST_PATH, index=False)
 
     def load_zero_reviews(self):
         """Load and initialize the zero reviews data."""
@@ -634,19 +590,6 @@ class MovieProcessor:
         except Exception as e:
             print_to_csv(f"Error saving refreshed data: {str(e)}")
 
-    def is_incomplete_stats_whitelisted(self, film_title: str, release_year: str, film_url: str = None) -> bool:
-        """Check if a movie is in the incomplete stats whitelist using URL as primary identifier."""
-        if not film_url:
-            return False
-            
-        try:
-            # Check if URL exists in incomplete stats lookup
-            return film_url in self.incomplete_stats_lookup
-                
-        except Exception as e:
-            print_to_csv(f"ERROR checking incomplete stats whitelist: {str(e)}")
-            return False
-
     def add_to_zero_reviews(self, film_title: str, release_year: str, film_url: str):
         """Add a movie to the zero reviews list using URL as primary identifier."""
         if not film_url:
@@ -870,12 +813,6 @@ class LetterboxdScraper:
                         
             # Process using URL as primary identifier
             if self.processor.is_whitelisted(None, None, film_url):
-                # If in incomplete stats whitelist, skip all refreshes
-                if self.processor.is_incomplete_stats_whitelisted(film_title, release_year, film_url):
-                    self.processor.process_whitelist_info(info, film_url)
-                    self.valid_movies_count += 1
-                    print_to_csv(f"✅ Processed whitelist data for {film_title} ({self.valid_movies_count}/{MAX_MOVIES})")
-                    return True
                 # If info is empty or incomplete, collect fresh data
                 required_fields = [
                     'Title', 'Year', 'Runtime', 'RatingCount',
