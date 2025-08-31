@@ -2204,6 +2204,9 @@ class LetterboxdScraper:
         # Save MAX_MOVIES_5000 results
         self.save_max_movies_5000_results()
 
+        # Save ceiling counts
+        self.save_ceiling_counts()
+
     def save_mpaa_results(self):
         """Save MPAA rating results to CSV and text files."""
         for rating in mpaa_stats:
@@ -2404,6 +2407,39 @@ class LetterboxdScraper:
             print_to_csv(f"Error in update_statistics_for_movie: {str(e)}")
             return None
     
+    def save_ceiling_counts(self):
+        """Save ceiling counts to Output_Ceilings.txt showing total movies that would have been added if no caps existed."""
+        ceiling_path = os.path.join(output_dir, 'Output_Ceilings.txt')
+        
+        with open(ceiling_path, mode='a', encoding='utf-8') as file:
+            # Write header with timestamp
+            file.write(f"\n{'='*50}\n")
+            file.write(f"RATING 5000 CEILING COUNTS - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+            file.write(f"{'='*50}\n\n")
+            
+            # Continent ceilings
+            file.write("CONTINENT CEILINGS:\n")
+            for continent in CONTINENTS_COUNTRIES.keys():
+                total_count = len(continent_stats[continent]['film_data'])
+                file.write(f"{continent}: {total_count}\n")
+            file.write("\n")
+            
+            # MPAA rating ceilings
+            file.write("MPAA RATING CEILINGS:\n")
+            for rating in MPAA_RATINGS:
+                total_count = len(mpaa_stats[rating]['film_data'])
+                file.write(f"{rating}: {total_count}\n")
+            file.write("\n")
+            
+            # Runtime category ceilings
+            file.write("RUNTIME CATEGORY CEILINGS:\n")
+            for category in RUNTIME_CATEGORIES.keys():
+                total_count = len(runtime_stats[category]['film_data'])
+                file.write(f"{category}: {total_count}\n")
+            file.write("\n")
+            
+            file.write(f"{'='*50}\n\n")
+
 def main():
     start_time = time.time()
     try:
