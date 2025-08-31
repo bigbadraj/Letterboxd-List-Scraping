@@ -60,7 +60,7 @@ def print_to_csv(message: str):
 
 # Configure locale and constants
 locale.setlocale(locale.LC_ALL, 'en_US.UTF-8')
-MAX_MOVIES = 5 # Currently using 7000
+MAX_MOVIES = 7000 # Currently using 7000
 MAX_MOVIES_5000 = 5000
 MAX_MOVIES_MPAA = 250
 MAX_MOVIES_RUNTIME = 250
@@ -2427,4 +2427,5 @@ def main():
                 pass
 
 if __name__ == "__main__":
+
     main()
