@@ -375,11 +375,17 @@ class MovieProcessor:
             added_to_continent = set()  # Track which continents the film has been added to
             for country in countries:
                 country_mapped = False
+                # Normalize country name for case-insensitive comparison
+                normalized_country = country.strip()
                 for continent, country_list in CONTINENTS_COUNTRIES.items():
-                    if country in country_list and continent not in added_to_continent:
-                        if add_to_continent_stats(continent, info.get('Title'), info.get('Year'), info.get('tmdbID'), film_url):
-                            self.update_continent_statistics(continent, film_url)
-                            added_to_continent.add(continent)  # Mark the continent as processed
+                    # Check if normalized country matches any country in the list (case-insensitive)
+                    if any(normalized_country.lower() == c.lower() for c in country_list):
+                        # If continent not already added, add it to stats
+                        if continent not in added_to_continent:
+                            if add_to_continent_stats(continent, info.get('Title'), info.get('Year'), info.get('tmdbID'), film_url):
+                                self.update_continent_statistics(continent, film_url)
+                                added_to_continent.add(continent)  # Mark the continent as processed
+                        # Mark country as mapped regardless of whether continent was already added
                         country_mapped = True
                         break
                 if not country_mapped:
@@ -1851,24 +1857,27 @@ class LetterboxdScraper:
                     if country_name:
                         # Check if the country belongs to any continent
                         for continent, countries in CONTINENTS_COUNTRIES.items():
-                            if country_name in countries and continent not in added_to_continent:
-                                # Check if we've reached the limit for this continent
-                                max_limit = (
-                                    MAX_MOVIES_AFRICA if continent == 'Africa' else
-                                    MAX_MOVIES_OCEANIA if continent == 'Oceania' else
-                                    MAX_MOVIES_SOUTH_AMERICA if continent == 'South America' else
-                                    MAX_MOVIES_CONTINENT
-                                )
-                                if len(continent_stats[continent]['film_data']) < max_limit:
-                                    continent_stats[continent]['film_data'].append({
-                                        'Title': film_title,
-                                        'Year': release_year,
-                                        'tmdbID': tmdb_id,
-                                        'Link': film_url
-                                    })
-                                    # Update continent statistics
-                                    self.processor.update_continent_statistics(continent, film_url)
-                                    added_to_continent.add(continent)  # Mark the continent as processed
+                            # Check if normalized country matches any country in the list (case-insensitive)
+                            if any(country_name.lower() == c.lower() for c in countries):
+                                # If continent not already added, add it to stats
+                                if continent not in added_to_continent:
+                                    # Check if we've reached the limit for this continent
+                                    max_limit = (
+                                        MAX_MOVIES_AFRICA if continent == 'Africa' else
+                                        MAX_MOVIES_OCEANIA if continent == 'Oceania' else
+                                        MAX_MOVIES_SOUTH_AMERICA if continent == 'South America' else
+                                        MAX_MOVIES_CONTINENT
+                                    )
+                                    if len(continent_stats[continent]['film_data']) < max_limit:
+                                        continent_stats[continent]['film_data'].append({
+                                            'Title': film_title,
+                                            'Year': release_year,
+                                            'tmdbID': tmdb_id,
+                                            'Link': film_url
+                                        })
+                                        # Update continent statistics
+                                        self.processor.update_continent_statistics(continent, film_url)
+                                        added_to_continent.add(continent)  # Mark the continent as processed
                                 break
             except Exception:
                 pass
