@@ -2189,6 +2189,9 @@ class LetterboxdScraper:
                 else:
                     print_to_csv(f"Warning: Movie data incomplete for {movie[0] if movie else 'Unknown'}")
 
+        # Save ceiling counts (before continent results truncate the data)
+        self.save_ceiling_counts()
+
         # Save MPAA results
         self.save_mpaa_results()
 
@@ -2203,9 +2206,6 @@ class LetterboxdScraper:
 
         # Save MAX_MOVIES_5000 results
         self.save_max_movies_5000_results()
-
-        # Save ceiling counts
-        self.save_ceiling_counts()
 
     def save_mpaa_results(self):
         """Save MPAA rating results to CSV and text files."""
