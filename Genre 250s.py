@@ -737,9 +737,9 @@ def extract_mpaa_rating(driver) -> Optional[str]:
                 if rating in rating_map:
                     return rating_map[rating]
         
-        # Only return NR if ALL USA releases were unrated
+        # If all USA releases were unrated, skip this movie entirely
         # This means the movie was never rated by the MPAA in the USA
-        return 'NR'
+        return None
         
     except Exception as e:
         # Only print error if it's not a NoSuchElementError

@@ -100,7 +100,7 @@ FILTER_KEYWORDS = {
 FILTER_GENRES = {'Documentary'}
 
 # Add new constants for MPAA ratings
-MPAA_RATINGS = ['G', 'PG', 'PG-13', 'R', 'NC-17', 'NR']
+MPAA_RATINGS = ['G', 'PG', 'PG-13', 'R', 'NC-17']
 mpaa_stats = {rating: {'film_data': [], 'director_counts': defaultdict(int), 'actor_counts': defaultdict(int), 
                        'decade_counts': defaultdict(int), 'genre_counts': defaultdict(int), 
                        'studio_counts': defaultdict(int), 'language_counts': defaultdict(int), 
@@ -931,9 +931,9 @@ def extract_mpaa_rating(driver) -> Optional[str]:
                 if rating in rating_map:
                     return rating_map[rating]
         
-        # Only return NR if ALL USA releases were unrated
+        # If all USA releases were unrated, skip this movie entirely
         # This means the movie was never rated by the MPAA in the USA
-        return 'NR'
+        return None
         
     except Exception as e:
         # Only print error if it's not a NoSuchElementError
