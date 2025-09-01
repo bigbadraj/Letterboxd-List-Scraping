@@ -450,39 +450,39 @@ def update_letterboxd_lists():
             try:
                 # Navigate to the list edit page
                 driver.get(details["url"])
-                time.sleep(2)  
+                time.sleep(5)  
 
                 # Step 1: Click the Import button
                 log_and_print("✅ Clicking the Import button.")
                 import_button = driver.find_element(By.CSS_SELECTOR, ".list-import-link")
                 import_button.click()
-                time.sleep(2)  
+                time.sleep(5)  
 
                 # Step 2: Import the first CSV file
                 log_and_print("✅ Importing the first CSV file.")
                 csv_file_name = details["csv_file_name_1"] 
                 log_and_print(f"✅ Selecting CSV file: {csv_file_name}")
-                time.sleep(1)  
+                time.sleep(5)  
 
                 # Use Alt + D to focus on the address bar of the file dialog
                 pyautogui.hotkey('alt', 'd')
-                time.sleep(1) 
+                time.sleep(5) 
 
                 # Type the path to the Outputs folder
                 pyautogui.typewrite(output_dir, interval=0.1)
                 pyautogui.press('enter')  
-                time.sleep(1)  
+                time.sleep(5)  
 
                 # Click into the search field of the Outputs folder
                 pyautogui.click(x=300, y=200)  
-                time.sleep(1)  
+                time.sleep(5)  
 
                 # Select the correct CSV file
                 pyautogui.typewrite(csv_file_name, interval=0.1) 
-                time.sleep(1)  
+                time.sleep(5)  
                 pyautogui.press('enter')  
 
-                time.sleep(30)  
+                time.sleep(90)  
 
                 # Attempt to find and copy the associated txt file
                 file_found = False
@@ -502,12 +502,12 @@ def update_letterboxd_lists():
                     else:
                         log_and_print(f"No matching text files found for {list_name}. Attempting again.")
                         pyautogui.click(x=300, y=200)  
-                        time.sleep(1)  
+                        time.sleep(5)  
                         pyautogui.typewrite(f"{list_name[:15]}*.txt", interval=0.1) 
-                        time.sleep(1) 
+                        time.sleep(5) 
                         pyautogui.press('enter')  
 
-                        time.sleep(1)  
+                        time.sleep(5)  
                         attempts += 1  
 
                 # Step 3: Click the "Hide Successful Matches" button
@@ -534,7 +534,7 @@ def update_letterboxd_lists():
                 log_and_print("✅ Clicking the 'Add films to list' button.")
                 add_films_button = driver.find_element(By.CSS_SELECTOR, ".add-import-films-to-list")
                 add_films_button.click()
-                time.sleep(5)  
+                time.sleep(15)  
 
                 # Step 6: Replace the existing list description with the copied text file contents
                 if 'file_contents' in locals():
@@ -548,42 +548,42 @@ def update_letterboxd_lists():
                         log_and_print(f"❌ Failed to add text using send_keys: {str(e)}")
 
                 # Step 7: Save the changes for the first import
-                time.sleep(15)
+                time.sleep(45)
                 log_and_print("✅ Saving the changes for the first import.");
                 driver.find_element(By.ID, "list-edit-save").click()
-                time.sleep(15)  
+                time.sleep(45)  
 
                 # Step 8: Click the Import button again
                 log_and_print("✅ Clicking the Import button for the second time.")
                 import_button = driver.find_element(By.CSS_SELECTOR, ".list-import-link")
                 import_button.click()
-                time.sleep(2)  
+                time.sleep(10)  
 
                 # Step 9: Import the second CSV file
                 log_and_print("✅ Importing the second CSV file.")
                 csv_file_name = details["csv_file_name_2"] 
                 log_and_print(f"✅ Selecting CSV file: {csv_file_name}")
-                time.sleep(1)  
+                time.sleep(5)  
 
                 # Use Alt + D to focus on the address bar of the file dialog
                 pyautogui.hotkey('alt', 'd')
-                time.sleep(1) 
+                time.sleep(5) 
 
                 # Type the path to the Outputs folder
                 pyautogui.typewrite(output_dir, interval=0.1)
                 pyautogui.press('enter')  
-                time.sleep(1)  
+                time.sleep(5)  
 
                 # Click into the search field of the Outputs folder
                 pyautogui.click(x=300, y=200)  
-                time.sleep(1)  
+                time.sleep(5)  
 
                 # Select the correct CSV file
                 pyautogui.typewrite(csv_file_name, interval=0.1) 
-                time.sleep(1)  
+                time.sleep(5)  
                 pyautogui.press('enter')  
 
-                time.sleep(30)  
+                time.sleep(90)  
 
                 # Step 10: Click the "Hide Successful Matches" button again
                 try:
@@ -593,51 +593,51 @@ def update_letterboxd_lists():
                 except Exception as e:
                     log_and_print(f"❌ Failed to click the handle: {str(e)}")
 
-                time.sleep(7)
+                time.sleep(25)
 
                 # Step 11: Click the "Add films to list" button again
                 log_and_print("✅ Clicking the 'Add films to list' button.")
                 add_films_button = driver.find_element(By.CSS_SELECTOR, ".add-import-films-to-list")
                 add_films_button.click()
-                time.sleep(5)   
+                time.sleep(15)   
 
                 # Step 12: Save the changes for the second import
-                time.sleep(1)
+                time.sleep(5)
                 log_and_print("✅ Saving the changes for the second import.")
                 driver.find_element(By.ID, "list-edit-save").click()
-                time.sleep(25)  
+                time.sleep(90)  
 
                 # Step 13: Click the Import button for the third time
                 log_and_print("✅ Clicking the Import button for the third time.")
                 import_button = driver.find_element(By.CSS_SELECTOR, ".list-import-link")
                 import_button.click()
-                time.sleep(2)  
+                time.sleep(10)  
 
                 # Step 14: Import the second CSV file
                 log_and_print("✅ Importing the third CSV file.")
                 csv_file_name = details["csv_file_name_3"] 
                 log_and_print(f"✅ Selecting CSV file: {csv_file_name}")
-                time.sleep(1)  
+                time.sleep(5)  
 
                 # Use Alt + D to focus on the address bar of the file dialog
                 pyautogui.hotkey('alt', 'd')
-                time.sleep(1) 
+                time.sleep(5) 
 
                 # Type the path to the Outputs folder
                 pyautogui.typewrite(output_dir, interval=0.1)
                 pyautogui.press('enter')  
-                time.sleep(1)  
+                time.sleep(5)  
 
                 # Click into the search field of the Outputs folder
                 pyautogui.click(x=300, y=200)  
-                time.sleep(1)  
+                time.sleep(5)  
 
                 # Select the correct CSV file
                 pyautogui.typewrite(csv_file_name, interval=0.1) 
-                time.sleep(1)  
+                time.sleep(5)  
                 pyautogui.press('enter')  
 
-                time.sleep(30)  
+                time.sleep(90)  
 
                 # Step 15: Click the "Hide Successful Matches" button again
                 try:
@@ -647,19 +647,19 @@ def update_letterboxd_lists():
                 except Exception as e:
                     log_and_print(f"❌ Failed to click the handle: {str(e)}")
 
-                time.sleep(7)
+                time.sleep(25)
 
                 # Step 16: Click the "Add films to list" button again
                 log_and_print("✅ Clicking the 'Add films to list' button.")
                 add_films_button = driver.find_element(By.CSS_SELECTOR, ".add-import-films-to-list")
                 add_films_button.click()
-                time.sleep(5)   
+                time.sleep(25)   
 
                 # Step 17: Save the changes for the third import
                 time.sleep(1)
                 log_and_print("✅ Saving the changes for the third import.")
                 driver.find_element(By.ID, "list-edit-save").click()
-                time.sleep(15)   
+                time.sleep(50)   
 
                 log_and_print(f"✅ Successfully updated special list: {list_name}")
                 # Append success result for special list

@@ -990,19 +990,7 @@ def add_to_continent_stats(continent: str, film_title: str, release_year: str, t
     Returns:
         bool: True if the movie was added, False otherwise
     """
-    # Determine the max limit based on the continent
-    max_limit = (
-        MAX_MOVIES_AFRICA if continent == 'Africa' else
-        MAX_MOVIES_OCEANIA if continent == 'Oceania' else
-        MAX_MOVIES_SOUTH_AMERICA if continent == 'South America' else
-        MAX_MOVIES_CONTINENT
-    )
-
-    # Check if we've reached the limit
-    if len(continent_stats[continent]['film_data']) >= max_limit:
-        return False
-
-    # Add the movie
+    # Add the movie without any limits - we'll apply limits later when saving
     continent_stats[continent]['film_data'].append({
         'Title': film_title,
         'Year': release_year,
@@ -1025,18 +1013,7 @@ def add_to_runtime_stats(category: str, film_title: str, release_year: str, tmdb
     Returns:
         bool: True if the movie was added, False otherwise
     """
-    # Determine the max limit based on the category
-    max_limit = (
-        MAX_180 if category == '180_Minutes_or_Greater' else
-        MAX_240 if category == '240_Minutes_or_Greater' else
-        MAX_MOVIES_RUNTIME
-    )
-
-    # Check if we've reached the limit
-    if len(runtime_stats[category]['film_data']) >= max_limit:
-        return False
-
-    # Add the movie
+    # Add the movie without any limits - we'll apply limits later when saving
     runtime_stats[category]['film_data'].append({
         'Title': film_title,
         'Year': release_year,
@@ -1059,18 +1036,7 @@ def add_to_mpaa_stats(rating: str, film_title: str, release_year: str, tmdb_id: 
     Returns:
         bool: True if the movie was added, False otherwise
     """
-    # Determine the max limit based on the rating
-    max_limit = (
-        MAX_MOVIES_G if rating == 'G' else
-        MAX_MOVIES_NC17 if rating == 'NC-17' else
-        MAX_MOVIES_MPAA
-    )
-
-    # Check if we've reached the limit
-    if len(mpaa_stats[rating]['film_data']) >= max_limit:
-        return False
-
-    # Add the movie
+    # Add the movie without any limits - we'll apply limits later when saving
     mpaa_stats[rating]['film_data'].append({
         'Title': film_title,
         'Year': release_year,
@@ -1314,7 +1280,6 @@ class LetterboxdScraper:
                     # Check if page loaded successfully
                     try:
                         page_title = self.driver.title
-                        print_to_csv(f"Page loaded: {page_title}")
                         
                         # Check if we got redirected to an error page
                         if "not found" in page_title.lower() or "error" in page_title.lower():
@@ -1361,9 +1326,6 @@ class LetterboxdScraper:
                     film_containers = WebDriverWait(self.driver, 10).until(
                         EC.presence_of_all_elements_located((By.CSS_SELECTOR, 'li.posteritem'))
                     )
-                    
-                    # Log what we found
-                    print_to_csv(f"Found {len(film_containers)} film containers on attempt {retry + 1}")
                     
                     # Check if we have a reasonable number of containers (not necessarily exactly 72)
                     if len(film_containers) >= 50:  # Allow some flexibility
@@ -1495,7 +1457,7 @@ class LetterboxdScraper:
             # Log some sample titles for debugging
             if film_data_list:
                 sample_titles = [f"{item['title']} ({item['release_year']})" for item in film_data_list[:3]]
-                print_to_csv(f"Sample titles from page: {', '.join(sample_titles)}")
+                # print_to_csv(f"Sample titles from page: {', '.join(sample_titles)}")
             
             if not film_data_list:
                 print_to_csv("No valid film data collected. Moving to next page...")
@@ -2132,6 +2094,69 @@ class LetterboxdScraper:
 
                     # Ensure we only save up to MAX_MOVIES_CONTINENT in the film data
                     continent_stats[continent]['film_data'] = continent_stats[continent]['film_data'][:MAX_MOVIES_CONTINENT]
+                    
+                    # Recalculate statistics from the limited data
+                    self.recalculate_continent_statistics(continent)
+
+    def recalculate_continent_statistics(self, continent):
+        """Recalculate statistics for a continent based on the limited film data."""
+        # Reset all statistics
+        continent_stats[continent]['director_counts'] = defaultdict(int)
+        continent_stats[continent]['actor_counts'] = defaultdict(int)
+        continent_stats[continent]['decade_counts'] = defaultdict(int)
+        continent_stats[continent]['genre_counts'] = defaultdict(int)
+        continent_stats[continent]['studio_counts'] = defaultdict(int)
+        continent_stats[continent]['language_counts'] = defaultdict(int)
+        continent_stats[continent]['country_counts'] = defaultdict(int)
+        
+        # Recalculate statistics from the limited film data
+        for movie in continent_stats[continent]['film_data']:
+            # Get movie data from whitelist
+            movie_data, _ = self.processor.get_whitelist_data(movie['Title'], movie['Year'], movie['Link'])
+            if movie_data:
+                # Update statistics
+                self.update_continent_statistics(continent, movie_data)
+
+    def update_continent_statistics(self, continent, movie_data):
+        """Update statistics for a continent with movie data."""
+        # Update director counts
+        if movie_data.get('Directors'):
+            for director in movie_data['Directors']:
+                continent_stats[continent]['director_counts'][director] += 1
+        
+        # Update actor counts
+        if movie_data.get('Actors'):
+            for actor in movie_data['Actors']:
+                continent_stats[continent]['actor_counts'][actor] += 1
+        
+        # Update decade counts
+        if movie_data.get('Year'):
+            try:
+                year = int(movie_data['Year'])
+                decade = f"{year // 10 * 10}s"
+                continent_stats[continent]['decade_counts'][decade] += 1
+            except (ValueError, TypeError):
+                pass
+        
+        # Update genre counts
+        if movie_data.get('Genres'):
+            for genre in movie_data['Genres']:
+                continent_stats[continent]['genre_counts'][genre] += 1
+        
+        # Update studio counts
+        if movie_data.get('Studios'):
+            for studio in movie_data['Studios']:
+                continent_stats[continent]['studio_counts'][studio] += 1
+        
+        # Update language counts
+        if movie_data.get('Languages'):
+            for language in movie_data['Languages']:
+                continent_stats[continent]['language_counts'][language] += 1
+        
+        # Update country counts
+        if movie_data.get('Countries'):
+            for country in movie_data['Countries']:
+                continent_stats[continent]['country_counts'][country] += 1
 
     def save_results(self):
         """Save all results to files"""
@@ -2189,7 +2214,7 @@ class LetterboxdScraper:
                 else:
                     print_to_csv(f"Warning: Movie data incomplete for {movie[0] if movie else 'Unknown'}")
 
-        # Save ceiling counts (before continent results truncate the data)
+        # Save ceiling counts
         self.save_ceiling_counts()
 
         # Save MPAA results
@@ -2224,6 +2249,9 @@ class LetterboxdScraper:
 
             # Limit to top entries
             top_data = top_data[:max_limit]
+            
+            # Recalculate statistics from the limited data
+            self.recalculate_mpaa_statistics(rating, top_data)
 
             # Save movie data in chunks
             for i in range(0, len(top_data), CHUNK_SIZE):
@@ -2285,6 +2313,66 @@ class LetterboxdScraper:
                         f.write("\n")
                 f.write("<strong>If you notice any movies you believe should/should not be included just let me know!</strong>")
 
+    def recalculate_mpaa_statistics(self, rating, top_data):
+        """Recalculate statistics for an MPAA rating based on the limited film data."""
+        # Reset all statistics
+        mpaa_stats[rating]['director_counts'] = defaultdict(int)
+        mpaa_stats[rating]['actor_counts'] = defaultdict(int)
+        mpaa_stats[rating]['decade_counts'] = defaultdict(int)
+        mpaa_stats[rating]['genre_counts'] = defaultdict(int)
+        mpaa_stats[rating]['studio_counts'] = defaultdict(int)
+        mpaa_stats[rating]['language_counts'] = defaultdict(int)
+        mpaa_stats[rating]['country_counts'] = defaultdict(int)
+        
+        # Recalculate statistics from the limited film data
+        for movie in top_data:
+            # Get movie data from whitelist
+            movie_data, _ = self.processor.get_whitelist_data(movie['Title'], movie['Year'], movie['Link'])
+            if movie_data:
+                # Update statistics
+                self.update_mpaa_statistics(rating, movie_data)
+
+    def update_mpaa_statistics(self, rating, movie_data):
+        """Update statistics for an MPAA rating with movie data."""
+        # Update director counts
+        if movie_data.get('Directors'):
+            for director in movie_data['Directors']:
+                mpaa_stats[rating]['director_counts'][director] += 1
+        
+        # Update actor counts
+        if movie_data.get('Actors'):
+            for actor in movie_data['Actors']:
+                mpaa_stats[rating]['actor_counts'][actor] += 1
+        
+        # Update decade counts
+        if movie_data.get('Year'):
+            try:
+                year = int(movie_data['Year'])
+                decade = f"{year // 10 * 10}s"
+                mpaa_stats[rating]['decade_counts'][decade] += 1
+            except (ValueError, TypeError):
+                pass
+        
+        # Update genre counts
+        if movie_data.get('Genres'):
+            for genre in movie_data['Genres']:
+                mpaa_stats[rating]['genre_counts'][genre] += 1
+        
+        # Update studio counts
+        if movie_data.get('Studios'):
+            for studio in movie_data['Studios']:
+                mpaa_stats[rating]['studio_counts'][studio] += 1
+        
+        # Update language counts
+        if movie_data.get('Languages'):
+            for language in movie_data['Languages']:
+                mpaa_stats[rating]['language_counts'][language] += 1
+        
+        # Update country counts
+        if movie_data.get('Countries'):
+            for country in movie_data['Countries']:
+                mpaa_stats[rating]['country_counts'][country] += 1
+
     def save_runtime_results(self):
         """Save results for each runtime category."""
         for category in RUNTIME_CATEGORIES.keys():
@@ -2298,6 +2386,10 @@ class LetterboxdScraper:
                 )
                 # Limit to top results
                 top_data = category_data[:int(max_limit)]  # Ensure it does not exceed the max
+                
+                # Recalculate statistics from the limited data
+                self.recalculate_runtime_statistics(category, top_data)
+
                 # Save movie data in chunks
                 num_chunks = (len(top_data) + CHUNK_SIZE - 1) // CHUNK_SIZE
                 for i in range(num_chunks):
@@ -2308,15 +2400,13 @@ class LetterboxdScraper:
                     output_path = os.path.join(output_dir, f'{category}_top_movies.csv')
                     chunk_df.to_csv(output_path, index=False, encoding='utf-8')
 
-                def get_ordinal(n):
-                    if 10 <= n % 100 <= 20:
-                        suffix = 'th'
-                    else:
-                        suffix = {1: 'st', 2: 'nd', 3: 'rd'}.get(n % 10, 'th')
-                    return str(n) + suffix
-
                 current_date = datetime.now()
-                formatted_date = current_date.strftime('%B ') + get_ordinal(current_date.day) + f", {current_date.year}"
+                day = current_date.day
+                if 10 <= day % 100 <= 20:
+                    suffix = 'th'
+                else:
+                    suffix = {1: 'st', 2: 'nd', 3: 'rd'}.get(day % 10, 'th')
+                formatted_date = current_date.strftime('%B ') + str(day) + suffix + f", {current_date.year}"
 
                 # Save statistics for this category
                 stats_path = os.path.join(output_dir, f'stats_{category}_top_movies.txt')
@@ -2359,6 +2449,66 @@ class LetterboxdScraper:
                                 file.write(f"{item}: {count}\n")
                             file.write("\n")
                     file.write("<strong>If you notice any movies you believe should/should not be included just let me know!</strong>")
+
+    def recalculate_runtime_statistics(self, category, top_data):
+        """Recalculate statistics for a runtime category based on the limited film data."""
+        # Reset all statistics
+        runtime_stats[category]['director_counts'] = defaultdict(int)
+        runtime_stats[category]['actor_counts'] = defaultdict(int)
+        runtime_stats[category]['decade_counts'] = defaultdict(int)
+        runtime_stats[category]['genre_counts'] = defaultdict(int)
+        runtime_stats[category]['studio_counts'] = defaultdict(int)
+        runtime_stats[category]['language_counts'] = defaultdict(int)
+        runtime_stats[category]['country_counts'] = defaultdict(int)
+        
+        # Recalculate statistics from the limited film data
+        for movie in top_data:
+            # Get movie data from whitelist
+            movie_data, _ = self.processor.get_whitelist_data(movie['Title'], movie['Year'], movie['Link'])
+            if movie_data:
+                # Update statistics
+                self.update_runtime_statistics(category, movie_data)
+
+    def update_runtime_statistics(self, category, movie_data):
+        """Update statistics for a runtime category with movie data."""
+        # Update director counts
+        if movie_data.get('Directors'):
+            for director in movie_data['Directors']:
+                runtime_stats[category]['director_counts'][director] += 1
+        
+        # Update actor counts
+        if movie_data.get('Actors'):
+            for actor in movie_data['Actors']:
+                runtime_stats[category]['actor_counts'][actor] += 1
+        
+        # Update decade counts
+        if movie_data.get('Year'):
+            try:
+                year = int(movie_data['Year'])
+                decade = f"{year // 10 * 10}s"
+                runtime_stats[category]['decade_counts'][decade] += 1
+            except (ValueError, TypeError):
+                pass
+        
+        # Update genre counts
+        if movie_data.get('Genres'):
+            for genre in movie_data['Genres']:
+                runtime_stats[category]['genre_counts'][genre] += 1
+        
+        # Update studio counts
+        if movie_data.get('Studios'):
+            for studio in movie_data['Studios']:
+                runtime_stats[category]['studio_counts'][studio] += 1
+        
+        # Update language counts
+        if movie_data.get('Languages'):
+            for language in movie_data['Languages']:
+                runtime_stats[category]['language_counts'][language] += 1
+        
+        # Update country counts
+        if movie_data.get('Countries'):
+            for country in movie_data['Countries']:
+                runtime_stats[category]['country_counts'][country] += 1
 
     def save_unknown_continent_films(self):
         """Save list of films with unknown countries to a file."""
