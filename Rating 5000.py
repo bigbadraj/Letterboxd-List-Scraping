@@ -2629,3 +2629,4 @@ if __name__ == "__main__":
 # Check each toggle, base list, and icon
 # Check everything in the matrix and betterboxd
 # Add a few more easter eggs
+# Add imdb integration, showing the parents guide of the movie using tmdb id
