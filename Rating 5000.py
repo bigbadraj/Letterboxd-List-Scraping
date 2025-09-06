@@ -2414,7 +2414,6 @@ class LetterboxdScraper:
                     # Format the category name for display
                     display_category = category.replace('_', ' ').replace('Minutes', 'minutes')
                     file.write(f"<strong>The Top {len(top_data)} Highest Rated {display_category} Movies On Letterboxd</strong>\n\n")
-                    file.write(f"<strong>Runtime defined as {display_category}.</strong>\n\n")
                     file.write(f"<strong>Last updated: {formatted_date}</strong>\n\n")
                     file.write("<a href=https://letterboxd.com/bigbadraj/list/the-official-list-index/> Check out more of the lists I update regularly! </a>\n\n")
                     file.write("<strong>Film eligibility criteria:</strong>\n")

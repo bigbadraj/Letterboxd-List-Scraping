@@ -2373,6 +2373,65 @@ class LetterboxdScraper:
                 # Recalculate statistics from the limited data
                 self.recalculate_runtime_statistics(category, top_data)
 
+                # Save movie data in chunks
+                num_chunks = (len(top_data) + CHUNK_SIZE - 1) // CHUNK_SIZE
+                for i in range(num_chunks):
+                    start_idx = i * CHUNK_SIZE
+                    end_idx = min((i + 1) * CHUNK_SIZE, len(top_data))
+                    chunk_df = pd.DataFrame(top_data[start_idx:end_idx])
+                    chunk_df = chunk_df[['Title', 'Year', 'tmdbID', 'Link']]
+                    output_path = os.path.join(output_dir, f'{category}_top_movies.csv')
+                    chunk_df.to_csv(output_path, index=False, encoding='utf-8')
+
+                current_date = datetime.now()
+                day = current_date.day
+                if 10 <= day % 100 <= 20:
+                    suffix = 'th'
+                else:
+                    suffix = {1: 'st', 2: 'nd', 3: 'rd'}.get(day % 10, 'th')
+                formatted_date = current_date.strftime('%B ') + str(day) + suffix + f", {current_date.year}"
+
+                # Save statistics for this category
+                stats_path = os.path.join(output_dir, f'stats_{category}_top_movies.txt')
+                with open(stats_path, mode='w', encoding='utf-8') as file:
+                    # Format the category name for display
+                    display_category = category.replace('_', ' ').replace('Minutes', 'minutes')
+                    file.write(f"<strong>The {len(top_data)} Most Popular {display_category} Movies On Letterboxd</strong>\n\n")
+                    file.write(f"<strong>Last updated: {formatted_date}</strong>\n\n")
+                    file.write("<a href=https://letterboxd.com/bigbadraj/list/the-official-list-index/> Check out more of the lists I update regularly! </a>\n\n")
+                    file.write("<strong>Film eligibility criteria:</strong>\n")
+                    file.write("-- Must have a minimum of 1,000 reviews on Letterboxd.\n")
+                    file.write("-- Cannot be a short film (minimum 40 minutes).\n")
+                    file.write("-- Cannot be a television miniseries.\n")
+                    file.write("-- Cannot be a compilation of short serials.\n")
+                    file.write("-- Cannot be a documentary.\n")
+                    file.write("-- Cannot be a non-narrative project (paint drying for 10 hours, a timelapse of the construction of a building, abstract images, etc).\n")
+                    file.write("-- Cannot be a recording of a live performance (stand-up specials, recordings of live theater, concert films, etc).\n")
+                    file.write("-- Cannot be a television special episode, though feature film spin-offs from television shows are allowed.\n")
+                    file.write("-- Feature film spin-offs from television shows must contain original material, not just recap or compilation of existing material.\n")
+                    file.write("-- Entries that have scores inflated because they share a name with a popular television show are removed, as I notice them.\n\n")
+
+                    # Write statistics for each category
+                    category_display_names = {
+                        'director_counts': 'directors',
+                        'actor_counts': 'actors',
+                        'decade_counts': 'decades',
+                        'genre_counts': 'genres',
+                        'studio_counts': 'studios',
+                        'language_counts': 'languages',
+                        'country_counts': 'countries'
+                    }
+
+                    for category_name, counts in runtime_stats[category].items():
+                        if category_name != 'film_data':
+                            # Use the mapping for display names
+                            display_name = category_display_names.get(category_name, category_name.replace('_', ' '))
+                            file.write(f"<strong>The ten most appearing {display_name}:</strong>\n")
+                            for item, count in sorted(counts.items(), key=lambda item: item[1], reverse=True)[:10]:
+                                file.write(f"{item}: {count}\n")
+                            file.write("\n")
+                    file.write("<strong>If you notice any movies you believe should/should not be included just let me know!</strong>")
+
     def recalculate_runtime_statistics(self, category, top_data):
         """Recalculate statistics for a runtime category based on the limited film data."""
         # Reset all statistics
