@@ -147,7 +147,7 @@ CONTINENTS_COUNTRIES = {
     'Africa': ['Ivory Coast', 'Algeria', 'Angola', 'Benin', 'Botswana', 'Burkina Faso', 'Burundi', 'Cabo Verde', 'Cameroon', 'Central African Republic', 'Chad', 'Comoros', 'Congo, Democratic Republic of the', 'Congo, Republic of the', 'Djibouti', 'Egypt', 'Equatorial Guinea', 'Eritrea', 'Eswatini', 'Ethiopia', 'Gabon', 'Gambia', 'Ghana', 'Guinea', 'Guinea-Bissau', 'Kenya', 'Lesotho', 'Liberia', 'Libya', 'Madagascar', 'Malawi', 'Mali', 'Mauritania', 'Mauritius', 'Morocco', 'Mozambique', 'Namibia', 'Niger', 'Nigeria', 'Rwanda', 'Sao Tome and Principe', 'Senegal', 'Seychelles', 'Sierra Leone', 'Somalia', 'South Africa', 'South Sudan', 'Sudan', 'Tanzania', 'Togo', 'Tunisia', 'Uganda', 'Zambia', 'Zimbabwe', 'Congo'],
     'Asia': ['State of Palestine', 'Hong Kong', 'Afghanistan', 'Armenia', 'Azerbaijan', 'Bahrain', 'Bangladesh', 'Bhutan', 'Brunei', 'Cambodia', 'China', 'Cyprus', 'Georgia', 'India', 'Indonesia', 'Iran', 'Iraq', 'Israel', 'Japan', 'Jordan', 'Kazakhstan', 'Kuwait', 'Kyrgyzstan', 'Laos', 'Lebanon', 'Malaysia', 'Maldives', 'Mongolia', 'Myanmar', 'Nepal', 'North Korea', 'Oman', 'Pakistan', 'Palestine', 'Philippines', 'Qatar', 'Russia', 'Saudi Arabia', 'Singapore', 'South Korea', 'Sri Lanka', 'Syrian Arab Republic', 'Taiwan', 'Tajikistan', 'Thailand', 'Timor-Leste', 'Turkey', 'Turkmenistan', 'United Arab Emirates', 'Uzbekistan', 'Vietnam', 'Yemen', 'Syria'],
     'Europe': ['East Germany', 'North Macedonia', 'Yugoslavia', 'Serbia and Montenegro', 'Czechoslovakia', 'Czechia', 'USSR', 'Albania', 'Latvia', 'Andorra', 'Liechtenstein', 'Armenia', 'Lithuania', 'Austria', 'Luxembourg', 'Azerbaijan', 'Malta', 'Belarus', 'Moldova', 'Belgium', 'Monaco', 'Bosnia and Herzegovina', 'Montenegro', 'Bulgaria', 'Netherlands', 'Croatia', 'Norway', 'Cyprus', 'Poland', 'Czech Republic', 'Portugal', 'Denmark', 'Romania', 'Estonia', 'Russia', 'Finland', 'San Marino', 'Former Yugoslav Republic of Macedonia', 'Serbia', 'France', 'Slovakia', 'Georgia', 'Slovenia', 'Germany', 'Spain', 'Greece', 'Sweden', 'Hungary', 'Switzerland', 'Iceland', 'Ireland', 'Turkey', 'Italy', 'Ukraine', 'Kosovo', 'UK'],
-    'North America': ['Bahamas', 'Guadeloupe', 'Cuba', 'The Bahamas', 'Bermuda', 'Canada', 'The Caribbean', 'Clipperton Island', 'Greenland', 'Mexico', 'Saint Pierre and Miquelon', 'Turks and Caicos Islands', 'USA', 'Belize', 'Costa Rica', 'El Salvador', 'Guatemala', 'Honduras', 'Nicaragua', 'Panama', 'Dominican Republic', 'Haiti', 'Jamaica', 'Martinique', 'Netherlands Antilles', 'Puerto Rico'],
+    'North America': ['Bahamas', 'Guadeloupe', 'Cuba', 'The Bahamas', 'Bermuda', 'Canada', 'The Caribbean', 'Clipperton Island', 'Greenland', 'Mexico', 'Saint Pierre and Miquelon', 'Turks and Caicos Islands', 'USA', 'United States', 'Belize', 'Costa Rica', 'El Salvador', 'Guatemala', 'Honduras', 'Nicaragua', 'Panama', 'Dominican Republic', 'Haiti', 'Jamaica', 'Martinique', 'Netherlands Antilles', 'Puerto Rico'],
     'Oceania': ['Australia', 'Fiji', 'Kiribati', 'Marshall Islands', 'Micronesia', 'Nauru', 'New Zealand', 'Palau', 'Papua New Guinea', 'Samoa', 'Solomon Islands', 'Tonga', 'Tuvalu', 'Vanuatu', 'French Polynesia'],
     'South America': ['Argentina', 'Bolivia', 'Brazil', 'Chile', 'Colombia', 'Ecuador', 'Guyana', 'Paraguay', 'Peru', 'Suriname', 'Uruguay', 'Bolivarian Republic of Venezuela', 'The Falkland Islands', 'South Georgia and the South Sandwich Islands', 'French Guiana', 'Venezuela'],
 }
@@ -467,7 +467,10 @@ class MovieProcessor:
                     }
                     if movie_info not in self.unmapped_countries_movies[country]:
                         self.unmapped_countries_movies[country].append(movie_info)
-                    print_to_csv(f"DEBUG: {info.get('Title')} has unmapped country: {country}")
+                    print_to_csv(f"DEBUG: {info.get('Title')} has unmapped country: '{country}' (URL: {film_url})")
+                    # Additional debugging to check if this might be a genre
+                    if country in ['Animation', 'Comedy', 'Family', 'Drama', 'Action', 'Horror', 'Romance', 'Thriller', 'Crime', 'Adventure', 'Fantasy', 'Science Fiction', 'Mystery', 'War', 'Western', 'Music', 'History']:
+                        print_to_csv(f"WARNING: '{country}' appears to be a genre, not a country! This suggests a data extraction bug.")
 
 
             
@@ -837,6 +840,9 @@ class MovieProcessor:
                 if country_name:
                     countries.append(country_name)
                     max_movies_5000_stats['country_counts'][country_name] += 1
+                    # Debug: Check if this looks like a genre instead of a country
+                    if country_name in ['Animation', 'Comedy', 'Family', 'Drama', 'Action', 'Horror', 'Romance', 'Thriller', 'Crime', 'Adventure', 'Fantasy', 'Science Fiction', 'Mystery', 'War', 'Western', 'Music', 'History']:
+                        print_to_csv(f"WARNING: Found genre '{country_name}' in country extraction for {movie_data.get('Title', 'Unknown')} - URL: {country.get_attribute('href')}")
             movie_data['Countries'] = countries
         except Exception:
             pass
@@ -1311,6 +1317,9 @@ class LetterboxdScraper:
                                 country_name = country.get_attribute('textContent').strip()
                                 if country_name:
                                     movie_countries.append(country_name)
+                                    # Debug: Check if this looks like a genre instead of a country
+                                    if country_name in ['Animation', 'Comedy', 'Family', 'Drama', 'Action', 'Horror', 'Romance', 'Thriller', 'Crime', 'Adventure', 'Fantasy', 'Science Fiction', 'Mystery', 'War', 'Western', 'Music', 'History']:
+                                        print_to_csv(f"WARNING: Found genre '{country_name}' in country extraction for {film_title} - URL: {country.get_attribute('href')}")
                         except Exception as e:
                             print_to_csv(f"Error extracting countries: {str(e)}")
                         
@@ -1537,14 +1546,26 @@ class LetterboxdScraper:
                         
                         # Extract year from title if possible and clean the title
                         release_year = None
+                        
+                        # First, try to extract year from parentheses (e.g., "Movie Title (2025)")
                         if '(' in film_title and ')' in film_title:
-                            # Extract year from parentheses
                             year_part = film_title.split('(')[-1].split(')')[0].strip()
                             # Check if the extracted part looks like a year (4 digits)
                             if year_part.isdigit() and len(year_part) == 4:
                                 release_year = year_part
                                 # Remove the year from the title
                                 film_title = film_title.split('(')[0].strip()
+                        
+                        # If no year found in parentheses, try to extract from end of title (e.g., "Movie Title 2025")
+                        if not release_year:
+                            title_parts = film_title.split()
+                            if len(title_parts) > 1:
+                                last_part = title_parts[-1].strip()
+                                # Check if the last part is a 4-digit year
+                                if last_part.isdigit() and len(last_part) == 4 and 1900 <= int(last_part) <= 2030:
+                                    release_year = last_part
+                                    # Remove the year from the title
+                                    film_title = ' '.join(title_parts[:-1]).strip()
                         
                         # Just check if title exists in blacklist, don't try to get release year yet
                         is_blacklisted = self.processor.is_blacklisted(None, None, film_url, None)  # Pass None as driver
@@ -2062,6 +2083,9 @@ class LetterboxdScraper:
                 if country_name:
                     countries.append(country_name)
                     max_movies_5000_stats['country_counts'][country_name] += 1
+                    # Debug: Check if this looks like a genre instead of a country
+                    if country_name in ['Animation', 'Comedy', 'Family', 'Drama', 'Action', 'Horror', 'Romance', 'Thriller', 'Crime', 'Adventure', 'Fantasy', 'Science Fiction', 'Mystery', 'War', 'Western', 'Music', 'History']:
+                        print_to_csv(f"WARNING: Found genre '{country_name}' in country extraction for {movie_data.get('Title', 'Unknown')} - URL: {country.get_attribute('href')}")
             movie_data['Countries'] = countries
         except Exception:
             pass
@@ -2076,7 +2100,7 @@ class LetterboxdScraper:
             end_idx = min((i + 1) * CHUNK_SIZE, len(max_movies_5000_stats['film_data']))
             chunk_df = pd.DataFrame(max_movies_5000_stats['film_data'][start_idx:end_idx])
             chunk_df = chunk_df[['Title', 'Year', 'tmdbID', 'Link']]
-            output_path = os.path.join(BASE_DIR, f'{self.scrape_type}_filtered_movie_titles{i+1}.csv')
+            output_path = os.path.join(BASE_DIR, f'{"popular" if self.scrape_type == "popular" else "rating"}_filtered_movie_titles{i+1}.csv')
             chunk_df.to_csv(output_path, index=False, encoding='utf-8')
 
         def get_ordinal(n):
@@ -2090,7 +2114,7 @@ class LetterboxdScraper:
         formatted_date = current_date.strftime('%B ') + get_ordinal(current_date.day) + f", {current_date.year}"
 
         # Save statistics for this rating
-        stats_path = os.path.join(BASE_DIR, f'{self.scrape_type}_filtered_titles.txt')
+        stats_path = os.path.join(BASE_DIR, f'{"popular" if self.scrape_type == "popular" else "rating"}_filtered_titles.txt')
         
         with open(stats_path, mode='w', encoding='utf-8') as file:
             # Write header
@@ -2178,11 +2202,11 @@ class LetterboxdScraper:
                         end_idx = min((i + 1) * CHUNK_SIZE, len(top_data))
                         chunk_df = pd.DataFrame(top_data[start_idx:end_idx])
                         chunk_df = chunk_df[['Title', 'Year', 'tmdbID']]
-                        output_path = os.path.join(BASE_DIR, f'{continent.replace(" ", "_").lower()}_{self.scrape_type}_movies.csv')
+                        output_path = os.path.join(BASE_DIR, f'{continent.replace(" ", "_").lower()}_{"pop" if self.scrape_type == "popular" else "top"}_movies.csv')
                         chunk_df.to_csv(output_path, index=False, encoding='utf-8')
 
                     # Save statistics for this continent
-                    stats_path = os.path.join(BASE_DIR, f'stats_{continent.replace(" ", "_").lower()}_{self.scrape_type}_movies.txt')
+                    stats_path = os.path.join(BASE_DIR, f'stats_{continent.replace(" ", "_").lower()}_{"pop" if self.scrape_type == "popular" else "top"}_movies.txt')
                     with open(stats_path, mode='w', encoding='utf-8') as file:
                         if self.scrape_type == "popular":
                             file.write(f"<strong>The Top {len(top_data)} Most Popular Films from {'Australia' if continent == 'Oceania' else continent}</strong>\n\n")
@@ -2414,7 +2438,7 @@ class LetterboxdScraper:
                 end_idx = min((i + 1) * CHUNK_SIZE, len(top_data))
                 chunk_df = pd.DataFrame(top_data[start_idx:end_idx])
                 chunk_df = chunk_df[['Title', 'Year', 'tmdbID', 'Link']]
-                output_path = os.path.join(output_dir, f'{rating}_{self.scrape_type}_movies.csv')
+                output_path = os.path.join(output_dir, f'{rating}_{"pop" if self.scrape_type == "popular" else "top"}_movies.csv')
                 chunk_df.to_csv(output_path, index=False, encoding='utf-8')
 
             # Format date for statistics file
@@ -2427,7 +2451,7 @@ class LetterboxdScraper:
             formatted_date = current_date.strftime('%B ') + str(day) + suffix + f", {current_date.year}"
 
             # Save statistics for this rating
-            stats_path = os.path.join(output_dir, f'stats_{rating}_{self.scrape_type}_movies.txt')
+            stats_path = os.path.join(output_dir, f'stats_{rating}_{"pop" if self.scrape_type == "popular" else "top"}_movies.txt')
             with open(stats_path, mode='w', encoding='utf-8') as file:
                 if self.scrape_type == "popular":
                     file.write(f"<strong>The {len(top_data)} Most Popular {rating}-Rated Movies On Letterboxd</strong>\n\n")
@@ -2552,7 +2576,7 @@ class LetterboxdScraper:
                     end_idx = min((i + 1) * CHUNK_SIZE, len(top_data))
                     chunk_df = pd.DataFrame(top_data[start_idx:end_idx])
                     chunk_df = chunk_df[['Title', 'Year', 'tmdbID', 'Link']]
-                    output_path = os.path.join(output_dir, f'{category}_{self.scrape_type}_movies.csv')
+                    output_path = os.path.join(output_dir, f'{category}_{"pop" if self.scrape_type == "popular" else "top"}_movies.csv')
                     chunk_df.to_csv(output_path, index=False, encoding='utf-8')
 
                 current_date = datetime.now()
@@ -2564,7 +2588,7 @@ class LetterboxdScraper:
                 formatted_date = current_date.strftime('%B ') + str(day) + suffix + f", {current_date.year}"
 
                 # Save statistics for this category
-                stats_path = os.path.join(output_dir, f'stats_{category}_top_movies.txt')
+                stats_path = os.path.join(output_dir, f'stats_{category}_{"pop" if self.scrape_type == "popular" else "top"}_movies.txt')
                 with open(stats_path, mode='w', encoding='utf-8') as file:
                     # Format the category name for display
                     display_category = category.replace('_', ' ').replace('Minutes', 'minutes')
@@ -2673,14 +2697,18 @@ class LetterboxdScraper:
             with open('Outputs/unknown_countries.txt', 'w', encoding='utf-8') as f:
                 f.write("Countries found in movies that are not mapped to any continent:\n\n")
                 for country in sorted(unmapped_countries):
-                    f.write(f"{country}")
-                    # Add movie information if available
+                    f.write(f"{country}\n")
+                    # Add all movie information if available
                     if hasattr(self, 'unmapped_countries_movies') and country in self.unmapped_countries_movies:
                         movies = self.unmapped_countries_movies[country]
                         if movies:
-                            # Show first movie URL as reference
-                            first_movie = movies[0]
-                            f.write(f" (from: {first_movie['title']} ({first_movie['year']}) - {first_movie['url']})")
+                            f.write(f"  Movies contributing to this unknown country ({len(movies)} total):\n")
+                            for movie in movies:
+                                f.write(f"    - {movie['title']} ({movie['year']}) - {movie['url']}\n")
+                        else:
+                            f.write("  No movie information available\n")
+                    else:
+                        f.write("  No movie information available\n")
                     f.write("\n")
 
     def log_error_to_csv(self, error_message: str):
