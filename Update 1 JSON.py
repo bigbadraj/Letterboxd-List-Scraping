@@ -85,7 +85,17 @@ def process_film(session, film_url, progress_tracker, list_number=None):
                     title = title_text
                 
                 film_poster_div = film_soup.find('div', class_='film-poster')
-                film_id = film_poster_div.get('data-film-id') if film_poster_div else "Unknown"
+                film_id = film_poster_div.get('data-film-id') if film_poster_div else None
+                
+                # If we couldn't get the film ID from the poster, extract it from the URL
+                if not film_id and film_url and '/film/' in film_url:
+                    film_slug = film_url.split('/film/')[1].rstrip('/')
+                    if film_slug:
+                        film_id = film_slug
+                
+                # If we still don't have an ID, set it to Unknown
+                if not film_id:
+                    film_id = "Unknown"
                 
                 current = progress_tracker.increment()
                 print(f"✅ {title_text} - Added ({current}/{progress_tracker.total_films})")
@@ -156,11 +166,19 @@ def process_page(session, url, max_films, progress_tracker):
                     year = film_title[film_title.rindex('(')+1:film_title.rindex(')')]
                     title = film_title[:film_title.rindex('(')].strip()
                     
+                    # Extract film ID from the URL
+                    film_id = "Unknown"
+                    if film_url and '/film/' in film_url:
+                        # Extract the film slug from the URL (e.g., /film/citizen-kane/ -> citizen-kane)
+                        film_slug = film_url.split('/film/')[1].rstrip('/')
+                        if film_slug:
+                            film_id = film_slug
+                    
                     # If we have the title and year, we can skip the individual film processing
                     # and just add it directly to avoid extra API calls
                     current = progress_tracker.increment()
                     print(f"✅ {film_title} - Added ({current}/{progress_tracker.total_films})")
-                    temp_data.append({'ListNumber': list_number, 'Title': title, 'Year': year, 'ID': 'Unknown'} if list_number is not None else {'Title': title, 'Year': year, 'ID': 'Unknown'})
+                    temp_data.append({'ListNumber': list_number, 'Title': title, 'Year': year, 'ID': film_id} if list_number is not None else {'Title': title, 'Year': year, 'ID': film_id})
                 else:
                     # Fallback to processing individual film page
                     futures.append(executor.submit(process_film, session, film_url, progress_tracker, list_number))
