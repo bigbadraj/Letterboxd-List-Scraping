@@ -118,9 +118,9 @@ mpaa_stats = {rating: {'film_data': [], 'director_counts': defaultdict(int), 'ac
 # Add new constants for runtime categories
 RUNTIME_CATEGORIES = {
     '90_Minutes_or_Less': [],
-    '120_Minutes_or_Less': [],
-    '180_Minutes_or_Greater': [],
-    '240_Minutes_or_Greater': []
+    '2_hours_or_Less': [],
+    '3_hours_or_Greater': [],
+    '4_hours_or_Greater': []
 }
 
 runtime_stats = {
@@ -128,15 +128,15 @@ runtime_stats = {
                      'decade_counts': defaultdict(int), 'genre_counts': defaultdict(int), 
                      'studio_counts': defaultdict(int), 'language_counts': defaultdict(int), 
                      'country_counts': defaultdict(int)},  # Each entry will have Title, Year, tmdbID, and URL fields
-    '120_Minutes_or_Less': {'film_data': [], 'director_counts': defaultdict(int), 'actor_counts': defaultdict(int), 
+    '2_hours_or_Less': {'film_data': [], 'director_counts': defaultdict(int), 'actor_counts': defaultdict(int), 
                       'decade_counts': defaultdict(int), 'genre_counts': defaultdict(int), 
                       'studio_counts': defaultdict(int), 'language_counts': defaultdict(int), 
                       'country_counts': defaultdict(int)},  # Each entry will have Title, Year, tmdbID, and URL fields
-    '180_Minutes_or_Greater': {'film_data': [], 'director_counts': defaultdict(int), 'actor_counts': defaultdict(int), 
+    '3_hours_or_Greater': {'film_data': [], 'director_counts': defaultdict(int), 'actor_counts': defaultdict(int), 
                          'decade_counts': defaultdict(int), 'genre_counts': defaultdict(int), 
                          'studio_counts': defaultdict(int), 'language_counts': defaultdict(int), 
                          'country_counts': defaultdict(int)},  # Each entry will have Title, Year, tmdbID, and URL fields
-    '240_Minutes_or_Greater': {'film_data': [], 'director_counts': defaultdict(int), 'actor_counts': defaultdict(int), 
+    '4_hours_or_Greater': {'film_data': [], 'director_counts': defaultdict(int), 'actor_counts': defaultdict(int), 
                          'decade_counts': defaultdict(int), 'genre_counts': defaultdict(int), 
                          'studio_counts': defaultdict(int), 'language_counts': defaultdict(int), 
                          'country_counts': defaultdict(int)}  # Each entry will have Title, Year, tmdbID, and URL fields
@@ -385,11 +385,11 @@ class MovieProcessor:
             if runtime < 91:
                 categories.append('90_Minutes_or_Less')
             if runtime < 121:
-                categories.append('120_Minutes_or_Less')
+                categories.append('2_hours_or_Less')
             if runtime > 179:
-                categories.append('180_Minutes_or_Greater')
+                categories.append('3_hours_or_Greater')
             if runtime > 239:
-                categories.append('240_Minutes_or_Greater')
+                categories.append('4_hours_or_Greater')
         
             for category in categories:
                 if add_to_runtime_stats(category, info.get('Title'), info.get('Year'), info.get('tmdbID'), film_url):
@@ -601,11 +601,11 @@ class MovieProcessor:
         if runtime < 91:
             categories.append('90_Minutes_or_Less')
         if runtime < 121:
-            categories.append('120_Minutes_or_Less')
+            categories.append('2_hours_or_Less')
         if runtime > 179:
-            categories.append('180_Minutes_or_Greater')
+            categories.append('3_hours_or_Greater')
         if runtime > 239:
-            categories.append('240_Minutes_or_Greater')
+            categories.append('4_hours_or_Greater')
                     
         # Add to each applicable category
         for category in categories:
@@ -1929,17 +1929,17 @@ class LetterboxdScraper:
                 if runtime < 91:
                     categories.append('90_Minutes_or_Less')
                 if runtime < 121:
-                    categories.append('120_Minutes_or_Less')
+                    categories.append('2_hours_or_Less')
                 if runtime > 179:
-                    categories.append('180_Minutes_or_Greater')
+                    categories.append('3_hours_or_Greater')
                 if runtime > 239:
-                    categories.append('240_Minutes_or_Greater')
+                    categories.append('4_hours_or_Greater')
 
                 for category in categories:
                     # Check if we've reached the limit for this category
                     max_limit = (
-                        self.max_180 if category == '180_Minutes_or_Greater' else
-                        self.max_240 if category == '240_Minutes_or_Greater' else
+                        self.max_180 if category == '3_hours_or_Greater' else
+                        self.max_240 if category == '4_hours_or_Greater' else
                         MAX_MOVIES_RUNTIME
                     )
                     if len(runtime_stats[category]['film_data']) < max_limit:
@@ -2559,8 +2559,8 @@ class LetterboxdScraper:
             if category_data:
                 # Determine the max limit based on the category
                 max_limit = (
-                    self.max_180 if category == '180_Minutes_or_Greater' else
-                    self.max_240 if category == '240_Minutes_or_Greater' else
+                    self.max_180 if category == '3_hours_or_Greater' else
+                    self.max_240 if category == '4_hours_or_Greater' else
                     MAX_MOVIES_RUNTIME
                 )
                 # Limit to top results
@@ -2806,9 +2806,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-# Verify that all toggles work
-# Verify that all jsons are being updated
-# Look for duplicate jsons being housed on github
-# update the 1001 all time list (there's been two more issues?)
-# gray idmb
