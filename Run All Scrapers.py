@@ -192,6 +192,67 @@ def create_extension_folder():
         print(f"\n[-] Error creating extension folder: {str(e)}")
         return False
 
+def push_to_github():
+    """Push the updated extension to GitHub repository"""
+    print(f"\n{f' Pushing to GitHub ':=^100}")
+    start_time = time.time()
+    
+    try:
+        # Check if git is available
+        try:
+            subprocess.run(['git', '--version'], check=True, capture_output=True)
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            print(f"\n❌ Git is not installed or not in PATH")
+            print(f"Please install Git from https://git-scm.com/")
+            print(f"Skipping GitHub push...")
+            return False
+        
+        # Check if we're in a git repository
+        try:
+            subprocess.run(['git', 'status'], check=True, capture_output=True)
+        except subprocess.CalledProcessError:
+            print(f"\n❌ Not in a git repository")
+            print(f"Please initialize git repository first")
+            return False
+        
+        # Add all changes
+        print(f"📝 Adding changes to git...")
+        subprocess.run(['git', 'add', '.'], check=True)
+        
+        # Get current version from manifest
+        try:
+            with open('MyExtension/manifest.json', 'r') as f:
+                import json
+                manifest = json.load(f)
+                version = manifest.get('version', 'unknown')
+        except:
+            version = 'unknown'
+        
+        # Create commit message
+        commit_message = f"Update extension to version {version} - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+        
+        # Commit changes
+        print(f"💾 Committing changes...")
+        subprocess.run(['git', 'commit', '-m', commit_message], check=True)
+        
+        # Push to GitHub
+        print(f"🚀 Pushing to GitHub...")
+        subprocess.run(['git', 'push', 'origin', 'main'], check=True)
+        
+        execution_time = time.time() - start_time
+        print(f"\n[+] Successfully pushed to GitHub!")
+        print(f"🔗 Repository: https://github.com/bigbadraj/Betterboxd-Letterboxd-Icon-Adder")
+        print(f"⏱️ Execution time: {format_time(execution_time)}")
+        return True
+        
+    except subprocess.CalledProcessError as e:
+        print(f"\n[-] Git command failed: {str(e)}")
+        print(f"Make sure you have push access to the repository")
+        return False
+    except Exception as e:
+        print(f"\n[-] Error pushing to GitHub: {str(e)}")
+        return False
+
 def main():
     start_time = time.time()
     current_date = datetime.now().strftime("%B %d, %Y")
@@ -271,6 +332,17 @@ def main():
         print(f"🔧 You can manually copy the MyExtension folder")
         return
 
+    # Phase 5: GitHub Push
+    print(f"\n{'='*100}")
+    print(f"PHASE 5: GITHUB PUSH".center(100))
+    print(f"{'='*100}")
+
+    # Push to GitHub repository
+    if not push_to_github():
+        print(f"\n⚠️ GitHub push failed")
+        print(f"📝 Extension built and packaged successfully")
+        print(f"🔧 You can manually push to GitHub if needed")
+
     # Calculate and display total execution time
     total_time = time.time() - start_time
     print(f"\n{'='*100}")
@@ -280,7 +352,8 @@ def main():
     print(f"{'='*100}")
     print(f"\n🎉 All phases completed successfully!")
     print(f"📦 Extension package is ready for Chrome Web Store upload")
-    print(f"📁 Check the root directory for the .zip file")
+    print(f"📁 Check Extension Versions directory for the new extension folder")
+    print(f"🔗 Latest version available at: https://github.com/bigbadraj/Betterboxd-Letterboxd-Icon-Adder")
     print(f"🚀 Your extension is ready to be published!")
 
 if __name__ == "__main__":
