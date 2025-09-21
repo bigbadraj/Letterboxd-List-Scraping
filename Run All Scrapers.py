@@ -169,9 +169,9 @@ def run_node_script(script_path, description):
         print(f"\n[-] Error running {description}: {str(e)}")
         return False
 
-def create_extension_folder():
-    """Create an unzipped folder of the extension for Chrome Web Store upload"""
-    print(f"\n{f' Creating Extension Folder ':=^100}")
+def create_extension_zip():
+    """Create a zip file of the extension for Chrome Web Store upload"""
+    print(f"\n{f' Creating Extension Zip File ':=^100}")
     start_time = time.time()
     
     try:
@@ -181,37 +181,29 @@ def create_extension_folder():
             os.makedirs(versions_dir)
             print(f"📁 Created {versions_dir} directory")
         
-        # Create unzipped folder in Extension Versions directory
-        folder_name = f"Betterboxd-Extension-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
-        folder_path = os.path.join(versions_dir, folder_name)
+        # Create zip file name with timestamp
+        zip_name = f"Betterboxd-Extension-{datetime.now().strftime('%Y%m%d-%H%M%S')}.zip"
+        zip_path = os.path.join(versions_dir, zip_name)
         
-        # Create the folder
-        os.makedirs(folder_path)
-        print(f"📁 Created extension folder: {folder_name}")
+        print(f"📦 Creating extension zip file: {zip_name}")
         
-        # Copy all files from MyExtension directory to the new folder
-        for root, dirs, files in os.walk('MyExtension'):
-            for file in files:
-                file_path = os.path.join(root, file)
-                relative_path = os.path.relpath(file_path, 'MyExtension')
-                dest_path = os.path.join(folder_path, relative_path)
-                
-                # Create subdirectories if needed
-                dest_dir = os.path.dirname(dest_path)
-                if not os.path.exists(dest_dir):
-                    os.makedirs(dest_dir)
-                
-                # Copy the file
-                shutil.copy2(file_path, dest_path)
-                print(f"  📦 Copied: {relative_path}")
+        # Create zip file with all files from MyExtension directory
+        with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+            for root, dirs, files in os.walk('MyExtension'):
+                for file in files:
+                    file_path = os.path.join(root, file)
+                    # Get relative path from MyExtension directory
+                    arcname = os.path.relpath(file_path, 'MyExtension')
+                    zipf.write(file_path, arcname)
+                    print(f"  📦 Added: {arcname}")
         
         execution_time = time.time() - start_time
-        print(f"\n[+] Extension folder created successfully: {folder_path}")
+        print(f"\n[+] Extension zip file created successfully: {zip_path}")
         print(f"⏱️ Execution time: {format_time(execution_time)}")
         return True
         
     except Exception as e:
-        print(f"\n[-] Error creating extension folder: {str(e)}")
+        print(f"\n[-] Error creating extension zip file: {str(e)}")
         return False
 
 
@@ -295,11 +287,11 @@ def main():
         print(f"PHASE 4: EXTENSION PACKAGING".center(100))
         print(f"{'='*100}")
 
-        # Create extension folder package
-        if not create_extension_folder():
+        # Create extension zip package
+        if not create_extension_zip():
             print(f"\n⚠️ Extension packaging failed")
             print(f"📝 Data scraping, processing, and building completed successfully")
-            print(f"🔧 You can manually copy the MyExtension folder")
+            print(f"🔧 You can manually zip the MyExtension folder")
             return
     else:
         print(f"\n{'='*100}")
@@ -313,8 +305,8 @@ def main():
     print(f"{'='*100}")
 
     print(f"\n✅ All phases completed successfully!")
-    print(f"📦 Extension package is ready for use")
-    print(f"📁 Check Extension Versions directory for the new extension folder")
+    print(f"📦 Extension zip package is ready for use")
+    print(f"📁 Check Extension Versions directory for the new extension zip file")
 
     # Calculate and display total execution time
     total_time = time.time() - start_time
@@ -324,8 +316,8 @@ def main():
     print(f"Total execution time: {format_time(total_time)}".center(100))
     print(f"{'='*100}")
     print(f"\n🎉 All phases completed successfully!")
-    print(f"📦 Extension package is ready for Chrome Web Store upload")
-    print(f"📁 Check Extension Versions directory for the new extension folder")
+    print(f"📦 Extension zip package is ready for Chrome Web Store upload")
+    print(f"📁 Check Extension Versions directory for the new extension zip file")
     print(f"🚀 Your extension is ready to be published!")
 
 if __name__ == "__main__":
