@@ -26,7 +26,6 @@ def load_credentials():
     
     credentials = {
         'TMDB_API_KEY': '',
-        'GITHUB_API_KEY': '',
         'LETTERBOXD_USERNAME': '',
         'LETTERBOXD_PASSWORD': ''
     }

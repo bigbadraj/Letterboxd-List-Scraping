@@ -1,15 +1,12 @@
-#!/usr/bin/env node
-
 const fs = require('fs');
 const path = require('path');
 const https = require('https');
 const { execSync } = require('child_process');
 
 // Configuration
-const GITHUB_REPO = 'bigbadraj/Letterboxd-List-JSONs';
-const GITHUB_BRANCH = 'main';
 const DATA_DIR = 'MyExtension/data';
 const MANIFEST_FILE = 'MyExtension/manifest.json';
+const LOCAL_DATA_DIR = 'Extension Versions/Betterboxd-Extension-20250918-071334/data';
 
 // List of all JSON files your extension uses (164 total)
 const JSON_FILES = [
@@ -179,20 +176,15 @@ const JSON_FILES = [
     'film_titles_women-directors-the-official-top-250-narrative.json'
 ];
 
-// Utility function to download a file
-function downloadFile(url, filepath) {
+// Utility function to copy a local file
+function copyLocalFile(sourcePath, destPath) {
     return new Promise((resolve, reject) => {
-        const file = fs.createWriteStream(filepath);
-        https.get(url, (response) => {
-            response.pipe(file);
-            file.on('finish', () => {
-                file.close();
-                resolve();
-            });
-        }).on('error', (err) => {
-            fs.unlink(filepath, () => {}); // Delete the file on error
+        try {
+            fs.copyFileSync(sourcePath, destPath);
+            resolve();
+        } catch (err) {
             reject(err);
-        });
+        }
     });
 }
 
@@ -225,49 +217,49 @@ async function build() {
             console.log(`📁 Created ${DATA_DIR} directory`);
         }
         
-        // Download all JSON files
-        console.log('📥 Downloading JSON files...');
+        // Check if local data directory exists
+        if (!fs.existsSync(LOCAL_DATA_DIR)) {
+            console.log(`❌ Local data directory not found: ${LOCAL_DATA_DIR}`);
+            console.log('Please ensure you have the latest extension version with JSON data files.');
+            return;
+        }
+        
+        // Copy all JSON files from local data directory
+        console.log('📁 Copying JSON files from local data...');
         let successCount = 0;
         let failCount = 0;
         
         for (const filename of JSON_FILES) {
-            const url = `https://raw.githubusercontent.com/${GITHUB_REPO}/${GITHUB_BRANCH}/${filename}`;
-            const filepath = path.join(DATA_DIR, filename);
+            const sourcePath = path.join(LOCAL_DATA_DIR, filename);
+            const destPath = path.join(DATA_DIR, filename);
             
             try {
-                await downloadFile(url, filepath);
-                console.log(`  ✅ ${filename}`);
-                successCount++;
+                if (fs.existsSync(sourcePath)) {
+                    await copyLocalFile(sourcePath, destPath);
+                    console.log(`  ✅ ${filename}`);
+                    successCount++;
+                } else {
+                    console.log(`  ⚠️ ${filename} - File not found in local data`);
+                    failCount++;
+                }
             } catch (error) {
                 console.log(`  ❌ ${filename} - ${error.message}`);
                 failCount++;
             }
         }
         
-        console.log(`\n📊 Download Summary: ${successCount} successful, ${failCount} failed`);
+        console.log(`\n📊 Copy Summary: ${successCount} successful, ${failCount} failed`);
         
         if (failCount > 0) {
-            console.log('⚠️  Some files failed to download. Check your internet connection and try again.');
-            return;
+            console.log('⚠️  Some files were not found in local data. Check your local data directory.');
         }
         
         // Update manifest version
         const newVersion = updateManifestVersion();
         
-        // Create build info file
-        const buildInfo = {
-            buildDate: new Date().toISOString(),
-            version: newVersion,
-            jsonFiles: JSON_FILES.length,
-            source: `https://github.com/${GITHUB_REPO}`
-        };
-        
-        fs.writeFileSync('build-info.json', JSON.stringify(buildInfo, null, 2));
-        console.log('📝 Created build-info.json');
-        
         console.log('\n🎉 Build completed successfully!');
         console.log(`📦 Extension version: ${newVersion}`);
-        console.log(`📁 JSON files: ${successCount} downloaded to ${DATA_DIR}/`);
+        console.log(`📁 JSON files: ${successCount} copied to ${DATA_DIR}/`);
         console.log('\n📋 Next steps:');
         console.log('1. Test the extension locally');
         console.log('2. Package for Chrome Web Store');

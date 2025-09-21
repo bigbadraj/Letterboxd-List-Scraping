@@ -11,6 +11,28 @@ import zipfile
 # Set console output encoding to UTF-8
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
 
+# Phase 1: Data Scraping
+SCRAPING_SCRIPTS = [
+    ("BoxOfficeMojo 250s.py", "Box Office Mojo Scraper"),
+    ("Top 250 Anything.py", "Letterboxd Min Filtering Scraper"),
+    ("Comedy 100.py", "Letterboxd Comedy List Scraper"),
+    ("5000 Pop and Top.py", "Letterboxd 5000 Pop and Top Films Scraper"),
+    ("Genre 250s.py", "Top 250 Genres Scraper"),
+]
+
+# Phase 2: Data Processing and Updates
+PROCESSING_SCRIPTS = [
+    ("Update Letterboxd Lists.py", "Update Lists on Letterboxd"),
+]
+
+# Phase 3: Extension Building
+ENABLE_EXTENSION_BUILD = True
+
+# Phase 4: Extension Packaging
+ENABLE_EXTENSION_PACKAGING = True
+
+# =============================================================================
+
 # Detect operating system and set appropriate Python command
 def get_python_command():
     """Return the appropriate Python command for the current OS."""
@@ -192,66 +214,6 @@ def create_extension_folder():
         print(f"\n[-] Error creating extension folder: {str(e)}")
         return False
 
-def push_to_github():
-    """Push the updated extension to GitHub repository"""
-    print(f"\n{f' Pushing to GitHub ':=^100}")
-    start_time = time.time()
-    
-    try:
-        # Check if git is available
-        try:
-            subprocess.run(['git', '--version'], check=True, capture_output=True)
-        except (subprocess.CalledProcessError, FileNotFoundError):
-            print(f"\n❌ Git is not installed or not in PATH")
-            print(f"Please install Git from https://git-scm.com/")
-            print(f"Skipping GitHub push...")
-            return False
-        
-        # Check if we're in a git repository
-        try:
-            subprocess.run(['git', 'status'], check=True, capture_output=True)
-        except subprocess.CalledProcessError:
-            print(f"\n❌ Not in a git repository")
-            print(f"Please initialize git repository first")
-            return False
-        
-        # Add all changes
-        print(f"📝 Adding changes to git...")
-        subprocess.run(['git', 'add', '.'], check=True)
-        
-        # Get current version from manifest
-        try:
-            with open('MyExtension/manifest.json', 'r') as f:
-                import json
-                manifest = json.load(f)
-                version = manifest.get('version', 'unknown')
-        except:
-            version = 'unknown'
-        
-        # Create commit message
-        commit_message = f"Update extension to version {version} - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-        
-        # Commit changes
-        print(f"💾 Committing changes...")
-        subprocess.run(['git', 'commit', '-m', commit_message], check=True)
-        
-        # Push to GitHub
-        print(f"🚀 Pushing to GitHub...")
-        subprocess.run(['git', 'push', 'origin', 'main'], check=True)
-        
-        execution_time = time.time() - start_time
-        print(f"\n[+] Successfully pushed to GitHub!")
-        print(f"🔗 Repository: https://github.com/bigbadraj/Betterboxd-Letterboxd-Icon-Adder")
-        print(f"⏱️ Execution time: {format_time(execution_time)}")
-        return True
-        
-    except subprocess.CalledProcessError as e:
-        print(f"\n[-] Git command failed: {str(e)}")
-        print(f"Make sure you have push access to the repository")
-        return False
-    except Exception as e:
-        print(f"\n[-] Error pushing to GitHub: {str(e)}")
-        return False
 
 def main():
     start_time = time.time()
@@ -259,6 +221,20 @@ def main():
     
     print(f"\n{'='*100}")
     print(f"Starting Complete Automation Pipeline - {current_date}".center(100))
+    print(f"{'='*100}")
+    
+    # Show which phases are enabled
+    print(f"\n📋 ENABLED PHASES:")
+    print(f"  Phase 1 - Data Scraping: {len(SCRAPING_SCRIPTS)} scripts")
+    for i, (script_file, description) in enumerate(SCRAPING_SCRIPTS, 1):
+        print(f"    {i}. {description}")
+    
+    print(f"  Phase 2 - Data Processing: {len(PROCESSING_SCRIPTS)} scripts")
+    for i, (script_file, description) in enumerate(PROCESSING_SCRIPTS, 1):
+        print(f"    {i}. {description}")
+    
+    print(f"  Phase 3 - Extension Building: {'ENABLED' if ENABLE_EXTENSION_BUILD else 'DISABLED'}")
+    print(f"  Phase 4 - Extension Packaging: {'ENABLED' if ENABLE_EXTENSION_PACKAGING else 'DISABLED'}")
     print(f"{'='*100}\n")
 
     # Phase 1: Data Scraping
@@ -266,18 +242,10 @@ def main():
     print(f"PHASE 1: DATA SCRAPING".center(100))
     print(f"{'='*100}")
 
-    scraping_scripts = [
-        ("BoxOfficeMojo 250s.py", "Box Office Mojo Scraper"),
-        ("Top 250 Anything.py", "Letterboxd Min Filtering Scraper"),
-        ("Comedy 100.py", "Letterboxd Comedy List Scraper"),
-        ("5000 Pop and Top.py", "Letterboxd 5000 Pop and Top Films Scraper"),
-        ("Genre 250s.py", "Top 250 Genres Scraper"),
-    ]
-
-    total_scraping_scripts = len(scraping_scripts)
+    total_scraping_scripts = len(SCRAPING_SCRIPTS)
     completed_scraping_scripts = 0
 
-    for script_file, description, *args in scraping_scripts:
+    for script_file, description, *args in SCRAPING_SCRIPTS:
         completed_scraping_scripts += 1
         print(f"\nScraping Progress: {completed_scraping_scripts}/{total_scraping_scripts} scripts")
         
@@ -290,15 +258,10 @@ def main():
     print(f"PHASE 2: DATA PROCESSING & UPDATES".center(100))
     print(f"{'='*100}")
 
-    processing_scripts = [
-        ("Update Letterboxd Lists.py", "Update Lists on Letterboxd"),
-        ("Update JSONs.py", "Update JSONs"),
-    ]
-
-    total_processing_scripts = len(processing_scripts)
+    total_processing_scripts = len(PROCESSING_SCRIPTS)
     completed_processing_scripts = 0
 
-    for script_file, description, *args in processing_scripts:
+    for script_file, description, *args in PROCESSING_SCRIPTS:
         completed_processing_scripts += 1
         print(f"\nProcessing Progress: {completed_processing_scripts}/{total_processing_scripts} scripts")
         
@@ -307,41 +270,51 @@ def main():
             return
 
     # Phase 3: Extension Building
-    print(f"\n{'='*100}")
-    print(f"PHASE 3: EXTENSION BUILDING".center(100))
-    print(f"{'='*100}")
+    if ENABLE_EXTENSION_BUILD:
+        print(f"\n{'='*100}")
+        print(f"PHASE 3: EXTENSION BUILDING".center(100))
+        print(f"{'='*100}")
 
-    # Build the extension with updated JSONs
-    extension_built = run_node_script('build.js', 'Extension Build Process')
-    
-    if not extension_built:
-        print(f"\n⚠️ Extension building skipped or failed")
-        print(f"📝 Data scraping and processing completed successfully")
-        print(f"🔧 Install Node.js and run the build manually if needed")
-        return
+        # Build the extension with local JSON data
+        extension_built = run_node_script('build.js', 'Extension Build Process')
+        
+        if not extension_built:
+            print(f"\n⚠️ Extension building skipped or failed")
+            print(f"📝 Data scraping and processing completed successfully")
+            print(f"🔧 Install Node.js and run the build manually if needed")
+            return
+    else:
+        print(f"\n{'='*100}")
+        print(f"PHASE 3: EXTENSION BUILDING (SKIPPED)".center(100))
+        print(f"{'='*100}")
+        print(f"📝 Extension building is disabled in configuration")
 
     # Phase 4: Extension Packaging
+    if ENABLE_EXTENSION_PACKAGING:
+        print(f"\n{'='*100}")
+        print(f"PHASE 4: EXTENSION PACKAGING".center(100))
+        print(f"{'='*100}")
+
+        # Create extension folder package
+        if not create_extension_folder():
+            print(f"\n⚠️ Extension packaging failed")
+            print(f"📝 Data scraping, processing, and building completed successfully")
+            print(f"🔧 You can manually copy the MyExtension folder")
+            return
+    else:
+        print(f"\n{'='*100}")
+        print(f"PHASE 4: EXTENSION PACKAGING (SKIPPED)".center(100))
+        print(f"{'='*100}")
+        print(f"📝 Extension packaging is disabled in configuration")
+
+    # Phase 5: Completion
     print(f"\n{'='*100}")
-    print(f"PHASE 4: EXTENSION PACKAGING".center(100))
+    print(f"PHASE 5: COMPLETION".center(100))
     print(f"{'='*100}")
 
-    # Create extension folder package
-    if not create_extension_folder():
-        print(f"\n⚠️ Extension packaging failed")
-        print(f"📝 Data scraping, processing, and building completed successfully")
-        print(f"🔧 You can manually copy the MyExtension folder")
-        return
-
-    # Phase 5: GitHub Push
-    print(f"\n{'='*100}")
-    print(f"PHASE 5: GITHUB PUSH".center(100))
-    print(f"{'='*100}")
-
-    # Push to GitHub repository
-    if not push_to_github():
-        print(f"\n⚠️ GitHub push failed")
-        print(f"📝 Extension built and packaged successfully")
-        print(f"🔧 You can manually push to GitHub if needed")
+    print(f"\n✅ All phases completed successfully!")
+    print(f"📦 Extension package is ready for use")
+    print(f"📁 Check Extension Versions directory for the new extension folder")
 
     # Calculate and display total execution time
     total_time = time.time() - start_time
@@ -353,7 +326,6 @@ def main():
     print(f"\n🎉 All phases completed successfully!")
     print(f"📦 Extension package is ready for Chrome Web Store upload")
     print(f"📁 Check Extension Versions directory for the new extension folder")
-    print(f"🔗 Latest version available at: https://github.com/bigbadraj/Betterboxd-Letterboxd-Icon-Adder")
     print(f"🚀 Your extension is ready to be published!")
 
 if __name__ == "__main__":
