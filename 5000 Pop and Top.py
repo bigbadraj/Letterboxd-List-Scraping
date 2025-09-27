@@ -1593,7 +1593,7 @@ class LetterboxdScraper:
             # Log some sample titles for debugging
             if film_data_list:
                 sample_titles = [f"{item['title']} ({item['release_year']})" for item in film_data_list[:3]]
-                print_to_csv(f"Sample titles from page: {', '.join(sample_titles)}")
+                # print_to_csv(f"Sample titles from page: {', '.join(sample_titles)}")
             
             if not film_data_list:
                 print_to_csv("No valid film data collected. Moving to next page...")
@@ -1731,7 +1731,7 @@ class LetterboxdScraper:
                             print_to_csv(f"⚠️ {film_title} skipped due to missing runtime")
                             self.rejected_movies_count += 1  # Increase rejected movie count
                             if retry < runtime_retries - 1:
-                                print_to_csv(f"Retrying... (Attempt {retry + 1}/{movie_retries})")
+                                print_to_csv(f"Retrying... (Attempt {retry + 1}/{runtime_retries})")
                                 time.sleep(2)
                                 continue
                         # If we get here, the movie passed all checks
@@ -2806,7 +2806,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
-
-# Make sure it's actually reerencing the jsons in content.
