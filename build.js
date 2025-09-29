@@ -6,7 +6,7 @@ const { execSync } = require('child_process');
 // Configuration
 const DATA_DIR = 'MyExtension/data';
 const MANIFEST_FILE = 'MyExtension/manifest.json';
-const LOCAL_DATA_DIR = 'Extension Versions/Betterboxd-Extension-20250918-071334/data';
+const EXTENSION_VERSIONS_DIR = 'Extension Versions';
 
 // List of all JSON files your extension uses (164 total)
 const JSON_FILES = [
@@ -176,6 +176,23 @@ const JSON_FILES = [
     'film_titles_women-directors-the-official-top-250-narrative.json'
 ];
 
+// Function to find the most recent extension version
+function findMostRecentExtensionVersion() {
+    if (!fs.existsSync(EXTENSION_VERSIONS_DIR)) {
+        return null;
+    }
+    
+    const versions = fs.readdirSync(EXTENSION_VERSIONS_DIR)
+        .filter(item => {
+            const itemPath = path.join(EXTENSION_VERSIONS_DIR, item);
+            return fs.statSync(itemPath).isDirectory() && item.startsWith('Betterboxd-Extension-');
+        })
+        .sort()
+        .reverse(); // Most recent first
+    
+    return versions.length > 0 ? versions[0] : null;
+}
+
 // Utility function to copy a local file
 function copyLocalFile(sourcePath, destPath) {
     return new Promise((resolve, reject) => {
@@ -217,49 +234,16 @@ async function build() {
             console.log(`📁 Created ${DATA_DIR} directory`);
         }
         
-        // Check if local data directory exists
-        if (!fs.existsSync(LOCAL_DATA_DIR)) {
-            console.log(`❌ Local data directory not found: ${LOCAL_DATA_DIR}`);
-            console.log('Please ensure you have the latest extension version with JSON data files.');
-            return;
-        }
-        
-        // Copy all JSON files from local data directory
-        console.log('📁 Copying JSON files from local data...');
-        let successCount = 0;
-        let failCount = 0;
-        
-        for (const filename of JSON_FILES) {
-            const sourcePath = path.join(LOCAL_DATA_DIR, filename);
-            const destPath = path.join(DATA_DIR, filename);
-            
-            try {
-                if (fs.existsSync(sourcePath)) {
-                    await copyLocalFile(sourcePath, destPath);
-                    console.log(`  ✅ ${filename}`);
-                    successCount++;
-                } else {
-                    console.log(`  ⚠️ ${filename} - File not found in local data`);
-                    failCount++;
-                }
-            } catch (error) {
-                console.log(`  ❌ ${filename} - ${error.message}`);
-                failCount++;
-            }
-        }
-        
-        console.log(`\n📊 Copy Summary: ${successCount} successful, ${failCount} failed`);
-        
-        if (failCount > 0) {
-            console.log('⚠️  Some files were not found in local data. Check your local data directory.');
-        }
+        // The master MyExtension directory is already ready with all files
+        // No need to copy or check anything - just proceed to version update
+        console.log('📁 Master MyExtension directory is ready for packaging');
         
         // Update manifest version
         const newVersion = updateManifestVersion();
         
         console.log('\n🎉 Build completed successfully!');
         console.log(`📦 Extension version: ${newVersion}`);
-        console.log(`📁 JSON files: ${successCount} copied to ${DATA_DIR}/`);
+        console.log(`📁 Master MyExtension directory packaged with fresh data`);
         console.log('\n📋 Next steps:');
         console.log('1. Test the extension locally');
         console.log('2. Package for Chrome Web Store');

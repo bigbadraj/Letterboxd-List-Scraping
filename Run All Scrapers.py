@@ -23,6 +23,7 @@ SCRAPING_SCRIPTS = [
 # Phase 2: Data Processing and Updates
 PROCESSING_SCRIPTS = [
     ("Update Letterboxd Lists.py", "Update Lists on Letterboxd"),
+    ("Create JSONs.py", "Create JSON Files from Letterboxd Lists"),
 ]
 
 # Phase 3: Extension Building
