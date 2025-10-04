@@ -299,8 +299,35 @@ class MovieProcessor:
     def load_whitelist(self):
         """Load and initialize the whitelist data."""
         try:
-            # Read whitelist with explicit string type for Year column and include Information and Link columns
-            self.whitelist = pd.read_excel(WHITELIST_PATH, header=0, names=['Title', 'Year', 'Information', 'Link'], dtype={'Year': str})
+            # First check if file exists
+            if not os.path.exists(WHITELIST_PATH):
+                print_to_csv("whitelist.xlsx not found. Creating new file.")
+                self.whitelist = pd.DataFrame(columns=['Title', 'Year', 'Information', 'Link'])
+                self.whitelist.to_excel(WHITELIST_PATH, index=False)
+                return
+            
+            # Read the file to see what columns it actually has
+            try:
+                # Try to read without specifying names first to see the actual structure
+                temp_df = pd.read_excel(WHITELIST_PATH, header=0)
+                
+                # Check if we have the expected columns
+                if 'Link' in temp_df.columns and 'Title' in temp_df.columns:
+                    # File has the right structure, read it normally
+                    self.whitelist = temp_df
+                else:
+                    # File exists but has wrong structure, create new one
+                    print_to_csv("Whitelist file has wrong structure. Creating new file.")
+                    self.whitelist = pd.DataFrame(columns=['Title', 'Year', 'Information', 'Link'])
+                    self.whitelist.to_excel(WHITELIST_PATH, index=False)
+                    return
+                    
+            except Exception as e:
+                print_to_csv(f"Error reading whitelist file: {str(e)}")
+                print_to_csv("Creating new whitelist file.")
+                self.whitelist = pd.DataFrame(columns=['Title', 'Year', 'Information', 'Link'])
+                self.whitelist.to_excel(WHITELIST_PATH, index=False)
+                return
             
             # Normalize the data
             self.whitelist['Title'] = self.whitelist['Title'].apply(normalize_text)
@@ -325,8 +352,9 @@ class MovieProcessor:
                         self.whitelist_lookup[row['Link']] = (info, idx, row['Link'])  # Added URL to tuple
                         continue
                 
-        except FileNotFoundError:
-            print_to_csv("whitelist.xlsx not found. Creating new file.")
+        except Exception as e:
+            print_to_csv(f"Unexpected error loading whitelist: {str(e)}")
+            print_to_csv("Creating new whitelist file.")
             self.whitelist = pd.DataFrame(columns=['Title', 'Year', 'Information', 'Link'])
             self.whitelist.to_excel(WHITELIST_PATH, index=False)
 
@@ -1648,7 +1676,7 @@ class LetterboxdScraper:
                     continue
                                 
                 # Get initial movie data without full scrape
-                movie_retries = 20  # Maximum number of retries for individual movie pages
+                movie_retries = 5  # Reduced retries for better performance
                 for retry in range(movie_retries):
                     try:
                         self.driver.get(film_url)
@@ -1691,7 +1719,8 @@ class LetterboxdScraper:
                             self.rejected_movies_count += 1
                             break  # Skip to next movie
                         # If here, rating_count >= 1000, proceed as before
-                        WebDriverWait(self.driver, 10).until(
+                        # Reduced wait time for better performance
+                        WebDriverWait(self.driver, 5).until(
                             EC.presence_of_element_located((By.CSS_SELECTOR, 'meta[property=\"og:title\"]'))
                         )
                         meta_tag = self.driver.find_element(By.CSS_SELECTOR, 'meta[property="og:title"]')
