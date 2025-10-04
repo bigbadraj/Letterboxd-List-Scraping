@@ -8,7 +8,7 @@ from urllib3.util.retry import Retry
 import threading
 from tqdm import tqdm
 import time
-# Removed GitHub import - now saving locally
+from github import Github
 import os
 from datetime import datetime
 import csv
@@ -23,23 +23,23 @@ def get_os_specific_paths():
     if system == "Windows":
         # Windows paths
         base_dir = r'C:\Users\bigba\aa Personal Projects\Letterboxd List Scraping'
-        extension_data_dir = os.path.join(base_dir, 'MyExtension', 'data')
+        jsons_dir = os.path.join(base_dir, 'JSONs')
         output_dir = os.path.join(base_dir, 'Outputs')
     elif system == "Darwin":  # macOS
         # macOS paths
         base_dir = '/Users/calebcollins/Documents/Letterboxd List Scraping'
-        extension_data_dir = os.path.join(base_dir, 'MyExtension', 'data')
+        jsons_dir = os.path.join(base_dir, 'JSONs')
         output_dir = os.path.join(base_dir, 'Outputs')
     
     return {
         'base_dir': base_dir,
-        'extension_data_dir': extension_data_dir,
+        'jsons_dir': jsons_dir,
         'output_dir': output_dir
     }
 
 # Get OS-specific paths
 paths = get_os_specific_paths()
-extension_data_dir = paths['extension_data_dir']
+jsons_dir = paths['jsons_dir']
 output_dir = paths['output_dir']
 
 # Define a custom print function
@@ -263,25 +263,48 @@ def format_time(seconds):
     else:
         return f"{seconds}s"
 
-def save_json_files_locally(filename, file_content):
+def update_github_file(filename, file_content):
     """
-    Saves JSON files to the main extension data directory (master copy).
+    Updates or creates a file in the GitHub repository.
     """
     try:
-        # Ensure the main extension data directory exists
-        os.makedirs(extension_data_dir, exist_ok=True)
+        # Load credentials
+        credentials = load_credentials()
         
-        # Save to main extension data directory
-        main_file_path = os.path.join(extension_data_dir, filename)
-        with open(main_file_path, 'w', encoding='utf-8') as f:
-            f.write(file_content)
-        print_to_csv(f"✅ Saved {filename} to master extension data directory")
+        # Initialize Github with your access token
+        g = Github(credentials['GITHUB_API_KEY'])
+        
+        # Get the repository
+        repo = g.get_repo("bigbadraj/Letterboxd-List-JSONs")
+        
+        # Get just the filename without path
+        base_filename = os.path.basename(filename)
+        
+        try:
+            # Try to get existing file
+            contents = repo.get_contents(base_filename)
+            # If file exists, update it
+            repo.update_file(
+                contents.path,
+                f"Updated {base_filename} - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+                file_content,
+                contents.sha
+            )
+            print_to_csv(f"✅ Successfully updated {base_filename} on GitHub")
+        except Exception:
+            # If file doesn't exist, create it
+            repo.create_file(
+                base_filename,
+                f"Added {base_filename} - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+                file_content
+            )
+            print_to_csv(f"✅ Successfully created {base_filename} on GitHub")
             
     except Exception as e:
-        print_to_csv(f"❌ Error saving {filename} locally: {str(e)}")
+        print_to_csv(f"❌ Error updating GitHub: {str(e)}")
 
 def main():
-    print_to_csv("Updating All Common Lists")
+    print_to_csv("Updating All Lists")
 
     # Define the lists of URLs to process
     lists_to_process = [
@@ -344,6 +367,7 @@ def main():
         {"url": "https://letterboxd.com/bigbadraj/list/top-250-pg-13-rated-narrative-feature-films/"},
         {"url": "https://letterboxd.com/bigbadraj/list/top-250-r-rated-narrative-feature-films/"},
         {"url": "https://letterboxd.com/bigbadraj/list/top-20-nc-17-rated-narrative-feature-films/"},
+        {"url": "https://letterboxd.com/bigbadraj/list/top-250-nr-rated-narrative-feature-films/"},
         {"url": "https://letterboxd.com/bigbadraj/list/top-250-highest-rated-north-american-narrative/"},
         {"url": "https://letterboxd.com/bigbadraj/list/top-250-highest-rated-south-american-narrative/"},
         {"url": "https://letterboxd.com/bigbadraj/list/top-250-highest-rated-south-american-narrative/"},
@@ -385,6 +409,7 @@ def main():
         {"url": "https://letterboxd.com/bigbadraj/list/top-250-most-popular-pg-13-rated-narrative/"},
         {"url": "https://letterboxd.com/bigbadraj/list/top-250-most-popular-r-rated-narrative-feature/"},
         {"url": "https://letterboxd.com/bigbadraj/list/top-25-most-popular-nc-17-rated-narrative/"},
+        {"url": "https://letterboxd.com/bigbadraj/list/top-250-most-popular-nr-rated-narrative-feature/"},
         {"url": "https://letterboxd.com/bigbadraj/list/top-250-most-popular-north-american-narrative/"},
         {"url": "https://letterboxd.com/bigbadraj/list/top-100-most-popular-south-american-narrative/"},
         {"url": "https://letterboxd.com/bigbadraj/list/top-250-most-popular-european-narrative-feature/"},
@@ -432,9 +457,13 @@ def main():
         {"url": "https://letterboxd.com/dvideostor/list/roger-eberts-great-movies/"},
         {"url": "https://letterboxd.com/crew/list/edgar-wrights-1000-favorite-movies/"},
         {"url": "https://letterboxd.com/francisfcoppola/list/movies-that-i-highly-recommend/"},
+        {"url": "https://letterboxd.com/george808/list/films-where-andrew-garfield-goes-up-against/"},
         {"url": "https://letterboxd.com/michaelj/list/martin-scorseses-film-school/"},
         {"url": "https://letterboxd.com/bigbadraj/list/every-writers-guild-of-america-best-screenplay/"},
+        {"url": "https://letterboxd.com/flanaganfilm/list/mike-flanagans-recommended-gateway-horror/"},
         {"url": "https://letterboxd.com/crew/list/most-fans-per-viewer-on-letterboxd-2024/"},
+        {"url": "https://letterboxd.com/lesaladino/list/every-movie-referenced-watched-in-gilmore/"},
+        {"url": "https://letterboxd.com/tintinabello/list/movies-where-the-protagonist-witnesses-a/"},
         {"url": "https://letterboxd.com/jamesmorison/list/every-film-that-has-ever-been-on-the-imdb/"},
         {"url": "https://letterboxd.com/pileofcrowns/list/harvard-film-phd-program-narrative-films/"},
         {"url": "https://letterboxd.com/gpu/list/bong-joon-hos-favorites/"},
@@ -463,7 +492,7 @@ def main():
             print_to_csv(f"\nProcessing list {i}/{len(lists_to_process)}")
             base_url = list_info['url']
             list_name = base_url.rstrip('/').split('/')[-1]
-            output_json = f"film_titles_{list_name}.json"
+            output_json = os.path.join(jsons_dir, f"film_titles_{list_name}.json")
             print_to_csv(f"URL: {base_url}")
             process_single_list(base_url, output_json, progress_tracker=progress_tracker, update_github=True)
             print_to_csv(f"Completed list {i}/{len(lists_to_process)}")
@@ -519,12 +548,12 @@ def process_single_list(base_url, output_json, progress_tracker, max_films=None,
     if any('ListNumber' in item for item in final_data):
         final_data = sorted(final_data, key=lambda x: x.get('ListNumber', float('inf')))
 
-    # Save JSON files locally to extension directories
+    # Save to GitHub repository only (do not write to local file)
     json_content = json.dumps(final_data, ensure_ascii=False, indent=4)
-    if update_github:  # Keep the parameter name for compatibility
-        save_json_files_locally(output_json, json_content)
+    if update_github:
+        update_github_file(output_json, json_content)
     
-    print_to_csv(f"\nSaved {len(all_data)} films locally: {output_json}")
+    print_to_csv(f"\nSaved {len(all_data)} films to GitHub: {output_json}")
     print_to_csv(f"Total time elapsed: {format_time(total_time)}")
     print_to_csv(f"Processing speed: {current_movies_per_second:.2f} movies/second")
 
