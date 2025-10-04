@@ -1,6 +1,6 @@
 # Ignore specific folders and their contents
 __pycache__/
-EasterEggs/
+EasterEgg/
 MyExtension/
 Outputs/
 
