@@ -3,6 +3,7 @@ __pycache__/
 EasterEggs/
 MyExtension/
 Outputs/
+Extension Versions/
 
 # Python cache files
 *.pyc
