@@ -290,26 +290,16 @@ def update_github_file(filename, file_content):
         print(f"❌ Error updating GitHub: {str(e)}")
 
 def main():
-    print("Choose an option:")
-    print("1: Add one list (not updated)")
-    print("2: Add one list (updated)")
-    
-    choice = input("Enter the number (1/2): ").strip()
+    base_url = input("Enter the Letterboxd list URL: ").strip()
+    list_name = base_url.rstrip('/').split('/')[-1]
+    output_json = os.path.join(jsons_dir, f'film_titles_{list_name}.json')
 
-    if choice in ["1", "2"]:
-        base_url = input("Enter the Letterboxd list URL: ").strip()
-        list_name = base_url.rstrip('/').split('/')[-1]
-        output_json = os.path.join(jsons_dir, f'film_titles_{list_name}.json')
-        
-        session = create_session()
-        total_films = get_list_size(session, base_url)
-        progress_tracker = ProgressTracker(total_films)
-        
-        # Process the list with GitHub updates only for option 2
-        if choice == "1":
-            process_single_list(base_url, output_json, progress_tracker=progress_tracker, update_github=False)
-        else:
-            process_single_list(base_url, output_json, progress_tracker=progress_tracker, update_github=True)
+    session = create_session()
+    total_films = get_list_size(session, base_url)
+    progress_tracker = ProgressTracker(total_films)
+
+    # Always update GitHub
+    process_single_list(base_url, output_json, progress_tracker=progress_tracker, update_github=True)
 
 def process_single_list(base_url, output_json, progress_tracker, max_films=None, update_github=True):
     session = create_session()

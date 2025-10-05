@@ -7,7 +7,7 @@ import os
 import platform
 
 # Set console output encoding to UTF-8
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8') 
 
 # Scripts to run (comment out any you don't need)
 SCRIPTS = [

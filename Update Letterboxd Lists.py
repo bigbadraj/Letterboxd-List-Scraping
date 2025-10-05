@@ -100,10 +100,9 @@ def update_letterboxd_lists():
         "africa_top_movies": "https://letterboxd.com/bigbadraj/list/top-100-highest-rated-african-narrative-feature/edit/",
         "oceania_top_movies": "https://letterboxd.com/bigbadraj/list/top-75-highest-rated-australian-narrative/edit/",
         "90_Minutes_or_Less_top_movies": "https://letterboxd.com/bigbadraj/list/the-top-250-highest-rated-films-of-90-minutes/edit/",
-        "120_Minutes_or_Less_top_movies": "https://letterboxd.com/bigbadraj/list/the-top-250-highest-rated-films-of-120-minutes/edit/",
-        "180_Minutes_or_Greater_top_movies": "https://letterboxd.com/bigbadraj/list/the-top-150-highest-rated-films-of-180-minutes/edit/",
-        "240_Minutes_or_Greater_top_movies": "https://letterboxd.com/bigbadraj/list/the-top-20-highest-rated-films-of-240-minutes/edit/",
-        "top_250_action_popular": "https://letterboxd.com/bigbadraj/list/top-250-most-popular-action-narrative-feature/edit/",
+        "2_Hours_or_Less_top_movies": "https://letterboxd.com/bigbadraj/list/the-top-250-highest-rated-films-of-120-minutes/edit/",
+        "3_Hours_or_Greater_top_movies": "https://letterboxd.com/bigbadraj/list/the-top-150-highest-rated-films-of-180-minutes/edit/",
+        "4_Hours_or_Greater_top_movies": "https://letterboxd.com/bigbadraj/list/the-top-20-highest-rated-films-of-240-minutes/edit/",
         "top_250_adventure_popular": "https://letterboxd.com/bigbadraj/list/top-250-most-popular-adventure-narrative/edit/",
         "top_250_animation_popular": "https://letterboxd.com/bigbadraj/list/top-250-most-popular-animation-narrative/edit/",
         "top_250_comedy_popular": "https://letterboxd.com/bigbadraj/list/top-250-most-popular-comedy-narrative-feature/edit/",
@@ -132,9 +131,9 @@ def update_letterboxd_lists():
         "africa_pop_movies": "https://letterboxd.com/bigbadraj/list/top-20-most-popular-african-narrative-feature/edit/",
         "oceania_pop_movies": "https://letterboxd.com/bigbadraj/list/top-150-most-popular-australian-narrative/edit/",
         "90_Minutes_or_Less_pop_movies": "https://letterboxd.com/bigbadraj/list/the-top-250-most-popular-films-of-90-minutes/edit/",
-        "2_hours_or_Less_pop_movies": "https://letterboxd.com/bigbadraj/list/the-top-250-most-popular-films-of-120-minutes/edit/",
-        "3_hours_or_Greater_pop_movies": "https://letterboxd.com/bigbadraj/list/the-top-75-most-popular-films-of-180-minutes/edit/",
-        "4_hours_or_Greater_pop_movies": "https://letterboxd.com/bigbadraj/list/the-top-5-most-popular-films-of-240-minutes/edit/",
+        "2_Hours_or_Less_pop_movies": "https://letterboxd.com/bigbadraj/list/the-top-250-most-popular-films-of-120-minutes/edit/",
+        "3_Hours_or_Greater_pop_movies": "https://letterboxd.com/bigbadraj/list/the-top-75-most-popular-films-of-180-minutes/edit/",
+        "4_Hours_or_Greater_pop_movies": "https://letterboxd.com/bigbadraj/list/the-top-5-most-popular-films-of-240-minutes/edit/",
     }
 
     # Dictionary of lists to update with specific descriptions
