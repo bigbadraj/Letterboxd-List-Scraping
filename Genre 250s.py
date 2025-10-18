@@ -575,20 +575,6 @@ class MovieProcessor:
         # Check if URL exists in blacklist lookup
         return film_url in self.blacklist_lookup
 
-    def save_refreshed_data(self, film_title: str, release_year: str, tmdb_id: str, film_url: str = None, reason: str = "") -> None:
-        """Save information about movies that had their data reconstructed, using URL as primary identifier, and include the reason."""
-        if not film_url:
-            return
-        try:
-            # Check if file exists to determine if we need to write headers
-            file_exists = os.path.exists(os.path.join(BASE_DIR, 'Refreshed_Data.csv'))
-            with open(os.path.join(BASE_DIR, 'Refreshed_Data.csv'), mode='a', newline='', encoding='utf-8') as file:
-                writer = csv.writer(file)
-                if not file_exists:
-                    writer.writerow(['Title', 'Year', 'tmdbID', 'Link', 'Reason'])
-                writer.writerow([film_title, release_year, tmdb_id, film_url, reason])
-        except Exception as e:
-            print_to_csv(f"Error saving refreshed data: {str(e)}")
 
     def add_to_zero_reviews(self, film_title: str, release_year: str, film_url: str):
         """Add a movie to the zero reviews list using URL as primary identifier."""
@@ -820,10 +806,6 @@ class LetterboxdScraper:
                 ]
                 missing_fields = [field for field in required_fields if not info.get(field)]
                 if not info or info == {} or missing_fields:
-                    # Only log to Refreshed_Data if info is partially filled (not empty, not just {}), and 4 or fewer fields are missing
-                    if missing_fields and info and info != {} and len(missing_fields) <= 4:
-                        reason = f"Missing or blank fields: {', '.join(missing_fields)}"
-                        self.processor.save_refreshed_data(film_title, release_year, tmdb_id, film_url, reason)
                     try:
                         self.driver.get(film_url)
                         WebDriverWait(self.driver, 10).until(
