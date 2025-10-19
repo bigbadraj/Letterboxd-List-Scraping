@@ -458,7 +458,7 @@ def main():
         {"url": "https://letterboxd.com/crew/list/edgar-wrights-1000-favorite-movies/"},
         {"url": "https://letterboxd.com/francisfcoppola/list/movies-that-i-highly-recommend/"},
         {"url": "https://letterboxd.com/george808/list/films-where-andrew-garfield-goes-up-against/"},
-        {"url": "https://letterboxd.com/michaelj/list/martin-scorseses-film-school/"},
+        {"url": "https://letterboxd.com/pinheadlarry145/list/martin-scorseses-film-school-the-85-films/"},
         {"url": "https://letterboxd.com/bigbadraj/list/every-writers-guild-of-america-best-screenplay/"},
         {"url": "https://letterboxd.com/flanaganfilm/list/mike-flanagans-recommended-gateway-horror/"},
         {"url": "https://letterboxd.com/crew/list/most-fans-per-viewer-on-letterboxd-2024/"},
@@ -473,7 +473,18 @@ def main():
         {"url": "https://letterboxd.com/jeffroskull/list/stanley-kubricks-100-favorite-filmsthat-we/"},
         {"url": "https://letterboxd.com/michaelj/list/akira-kurosawas-100-favorite-movies/"},
         {"url": "https://letterboxd.com/abdurrhmknkl/list/david-finchers-favorite-films/"},
-
+        {"url": "https://letterboxd.com/bfi/list/sight-and-sounds-greatest-films-of-all-time/"},
+        {"url": "https://letterboxd.com/afi/list/afis-100-years100-movies-10th-anniversary/"},
+        {"url": "https://letterboxd.com/momsaysitsok/list/r-truefilm-canon-1000-films/"},
+        {"url": "https://letterboxd.com/top10ner/list/top10ners-1000-greatest-films-of-all-time/"},
+        {"url": "https://letterboxd.com/oneohtrix/list/writers-guild-of-america-101-greatest-screenplays/"},
+        {"url": "https://letterboxd.com/peterstanley/list/1001-movies-you-must-see-before-you-die"},
+        {"url": "https://letterboxd.com/crew/list/most-fans-on-letterboxd-with-pronoun-he-2024/"},
+        {"url": "https://letterboxd.com/crew/list/most-fans-on-letterboxd-with-pronoun-she-3/"},
+        {"url": "https://letterboxd.com/crew/list/most-fans-on-letterboxd-with-pronoun-ze-or-3/"},
+        {"url": "https://letterboxd.com/thisisdrew/list/they-shoot-pictures-dont-they-1000-greatest-5/"},
+        {"url": "https://letterboxd.com/bigbadraj/list/top-250-most-popular-romantic-comedy-narrative/"},
+        {"url": "https://letterboxd.com/bigbadraj/list/writers-guild-of-america-best-screenplay/"},
     ]
     
     # Calculate total films across all relevant lists
