@@ -212,6 +212,20 @@ def update_letterboxd_lists():
 
                 # Step 2: Select the correct CSV file
                 csv_file_name = f"{list_name}.csv"
+                csv_file_path = os.path.join(output_dir, csv_file_name)
+
+                # Check if the CSV file exists before attempting to upload
+                if not os.path.exists(csv_file_path):
+                    log_and_print(f"❌ CSV file not found: {csv_file_name}")
+                    log_and_print(f"❌ Skipping list update for {list_name} - file does not exist")
+                    # Close the file dialog by pressing Escape
+                    pyautogui.press('escape')
+                    time.sleep(1)
+                    results.append({
+                        'list_name': list_name,
+                        'status': f'Failed to update: CSV file {csv_file_name} not found'
+                    })
+                    continue
 
                 log_and_print(f"✅ Selecting CSV file: {csv_file_name}")
                 time.sleep(1)
@@ -352,7 +366,21 @@ def update_letterboxd_lists():
                 time.sleep(2)  
 
                 # Step 2: Select the correct CSV file
-                csv_file_name = f"{list_name}.csv"  
+                csv_file_name = f"{list_name}.csv"
+                csv_file_path = os.path.join(output_dir, csv_file_name)
+
+                # Check if the CSV file exists before attempting to upload
+                if not os.path.exists(csv_file_path):
+                    log_and_print(f"❌ CSV file not found: {csv_file_name}")
+                    log_and_print(f"❌ Skipping list update for {list_name} - file does not exist")
+                    # Close the file dialog by pressing Escape
+                    pyautogui.press('escape')
+                    time.sleep(1)
+                    results.append({
+                        'list_name': list_name,
+                        'status': f'Failed to update: CSV file {csv_file_name} not found'
+                    })
+                    continue
 
                 log_and_print(f"✅ Selecting CSV file: {csv_file_name}")
                 time.sleep(1) 
@@ -459,7 +487,22 @@ def update_letterboxd_lists():
 
                 # Step 2: Import the first CSV file
                 log_and_print("✅ Importing the first CSV file.")
-                csv_file_name = details["csv_file_name_1"] 
+                csv_file_name = details["csv_file_name_1"]
+                csv_file_path = os.path.join(output_dir, csv_file_name)
+
+                # Check if the CSV file exists before attempting to upload
+                if not os.path.exists(csv_file_path):
+                    log_and_print(f"❌ CSV file not found: {csv_file_name}")
+                    log_and_print(f"❌ Skipping special list update for {list_name} - file does not exist")
+                    # Close the file dialog by pressing Escape
+                    pyautogui.press('escape')
+                    time.sleep(1)
+                    results.append({
+                        'list_name': list_name,
+                        'status': f'Failed to update: CSV file {csv_file_name} not found'
+                    })
+                    continue
+
                 log_and_print(f"✅ Selecting CSV file: {csv_file_name}")
                 time.sleep(1)  
 
@@ -560,7 +603,22 @@ def update_letterboxd_lists():
 
                 # Step 9: Import the second CSV file
                 log_and_print("✅ Importing the second CSV file.")
-                csv_file_name = details["csv_file_name_2"] 
+                csv_file_name = details["csv_file_name_2"]
+                csv_file_path = os.path.join(output_dir, csv_file_name)
+
+                # Check if the CSV file exists before attempting to upload
+                if not os.path.exists(csv_file_path):
+                    log_and_print(f"❌ CSV file not found: {csv_file_name}")
+                    log_and_print(f"❌ Skipping second CSV import for {list_name} - file does not exist")
+                    # Close the file dialog by pressing Escape
+                    pyautogui.press('escape')
+                    time.sleep(1)
+                    results.append({
+                        'list_name': list_name,
+                        'status': f'Failed to update: CSV file {csv_file_name} not found'
+                    })
+                    continue
+
                 log_and_print(f"✅ Selecting CSV file: {csv_file_name}")
                 time.sleep(1)  
 
@@ -612,9 +670,24 @@ def update_letterboxd_lists():
                 import_button.click()
                 time.sleep(2)  
 
-                # Step 14: Import the second CSV file
+                # Step 14: Import the third CSV file
                 log_and_print("✅ Importing the third CSV file.")
-                csv_file_name = details["csv_file_name_3"] 
+                csv_file_name = details["csv_file_name_3"]
+                csv_file_path = os.path.join(output_dir, csv_file_name)
+
+                # Check if the CSV file exists before attempting to upload
+                if not os.path.exists(csv_file_path):
+                    log_and_print(f"❌ CSV file not found: {csv_file_name}")
+                    log_and_print(f"❌ Skipping third CSV import for {list_name} - file does not exist")
+                    # Close the file dialog by pressing Escape
+                    pyautogui.press('escape')
+                    time.sleep(1)
+                    results.append({
+                        'list_name': list_name,
+                        'status': f'Failed to update: CSV file {csv_file_name} not found'
+                    })
+                    continue
+
                 log_and_print(f"✅ Selecting CSV file: {csv_file_name}")
                 time.sleep(1)  
 

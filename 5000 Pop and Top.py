@@ -58,6 +58,25 @@ def print_to_csv(message: str):
         writer = csv.writer(file)
         writer.writerow([message])  # Write the message as a new row
 
+def calculate_retry_delay(attempt: int, base_delay: float = 5, max_delay: float = 300) -> float:
+    """Calculate exponential backoff delay with jitter."""
+    import random
+    # Exponential backoff: base_delay * (2^attempt) with jitter
+    delay = min(base_delay * (2 ** attempt), max_delay)
+    # Add random jitter (±25%) to avoid thundering herd
+    jitter = delay * 0.25 * (2 * random.random() - 1)
+    return max(1, delay + jitter)
+
+def is_network_error(error: Exception) -> bool:
+    """Check if the error is network-related."""
+    error_str = str(error).lower()
+    network_keywords = [
+        'timeout', 'connection', 'network', 'dns', 'resolve', 'unreachable',
+        'refused', 'reset', 'broken pipe', 'ssl', 'certificate', 'handshake',
+        'proxy', 'gateway', 'server error', 'bad gateway', 'service unavailable'
+    ]
+    return any(keyword in error_str for keyword in network_keywords)
+
 # Configure locale and constants
 locale.setlocale(locale.LC_ALL, 'en_US.UTF-8')
 MAX_MOVIES = 7000 # Currently using 7000
@@ -69,8 +88,10 @@ MAX_MOVIES_CONTINENT = 250
 # Configure settings
 MIN_RATING_COUNT = 1000
 MIN_RUNTIME = 40
-MAX_RETRIES = 25
+MAX_RETRIES = 50
 RETRY_DELAY = 15
+BASE_RETRY_DELAY = 5  # Base delay for exponential backoff
+MAX_RETRY_DELAY = 300  # Maximum delay (5 minutes)
 CHUNK_SIZE = 1900
 
 # Configure specific maxes
@@ -240,9 +261,10 @@ class RequestsSession:
     def __init__(self):
         self.session = requests.Session()
         retry_strategy = Retry(
-            total=3,
-            backoff_factor=1,
-            status_forcelist=[429, 500, 502, 503, 504]
+            total=10,  # Increased total retries
+            backoff_factor=2,  # Increased backoff factor for exponential backoff
+            status_forcelist=[429, 500, 502, 503, 504, 520, 521, 522, 523, 524],  # Added more error codes
+            raise_on_status=False  # Don't raise exceptions on retry-able status codes
         )
         adapter = HTTPAdapter(max_retries=retry_strategy)
         self.session.mount("https://", adapter)
@@ -981,7 +1003,9 @@ def setup_webdriver() -> webdriver.Firefox:
     
     # Add these optimizations:
     options.set_preference("javascript.enabled", True)  # Keep JS enabled but optimize
-    options.set_preference("network.http.connection-timeout", 30)  # Reduce timeout
+    options.set_preference("network.http.connection-timeout", 60)  # Increased timeout for better reliability
+    options.set_preference("network.http.response.timeout", 60)  # Response timeout
+    options.set_preference("network.http.keep-alive.timeout", 60)  # Keep-alive timeout
     options.set_preference("network.http.max-connections-per-server", 10)  # Limit connections
     options.set_preference("browser.cache.disk.enable", True)  # Enable disk cache
     options.set_preference("browser.cache.memory.enable", True)  # Enable memory cache
@@ -1200,7 +1224,94 @@ class LetterboxdScraper:
         self.unknown_continent_films = []  # Initialize the list for unknown continent films
         self.top_movies_count = 0  # Track the number of movies added to the top 5000 list
         self.rejected_movies_count = 0  # Add counter for rejected movies
+        
+        # Browser recovery state tracking
+        self.current_url = None
+        self.last_successful_page = 1
+        self.recovery_attempts = 0
+        self.max_recovery_attempts = 10
+        self.processed_movies_on_current_page = set()  # Track movies processed on current page
+        
         print_to_csv("Initialized Letterboxd Scraper.")
+
+    def is_browser_responsive(self):
+        """Check if the browser is still responsive by attempting a simple operation."""
+        try:
+            # Try to get the current URL - this will fail if browser crashed
+            current_url = self.driver.current_url
+            # Try to get the page title - this will also fail if browser crashed
+            title = self.driver.title
+            return True
+        except Exception as e:
+            print_to_csv(f"Browser not responsive: {str(e)}")
+            return False
+
+    def recover_browser(self):
+        """Recover from browser crash by creating a new driver and restoring state."""
+        if self.recovery_attempts >= self.max_recovery_attempts:
+            print_to_csv(f"❌ Maximum recovery attempts ({self.max_recovery_attempts}) reached. Cannot recover browser.")
+            return False
+            
+        self.recovery_attempts += 1
+        
+        # Calculate wait time with exponential backoff (longer waits for more attempts)
+        wait_time = min(30, 5 + (self.recovery_attempts * 10))
+        print_to_csv(f"🔄 Attempting browser recovery (attempt {self.recovery_attempts}/{self.max_recovery_attempts})...")
+        print_to_csv(f"⏳ Waiting {wait_time} seconds before attempting recovery...")
+        time.sleep(wait_time)
+        
+        try:
+            # Close the crashed driver
+            try:
+                self.driver.quit()
+            except:
+                pass
+            
+            # Create a new driver
+            print_to_csv("Creating new browser instance...")
+            self.driver = setup_webdriver()
+            
+            # Restore state - resume from the current page (not going back)
+            # The duplicate prevention logic will handle skipping already processed movies
+            recovery_page = self.page_number
+            self.page_number = recovery_page
+            
+            recovery_url = f'{self.base_url}page/{recovery_page}/'
+            print_to_csv(f"Navigating to recovery page: {recovery_url}")
+            print_to_csv(f"📝 Note: Duplicate prevention will skip any movies already processed in this session.")
+            
+            # Navigate to the recovery page
+            self.driver.get(recovery_url)
+            
+            # Wait for page to load
+            WebDriverWait(self.driver, 15).until(
+                EC.presence_of_element_located((By.CSS_SELECTOR, 'li.posteritem'))
+            )
+            
+            self.current_url = recovery_url
+            print_to_csv(f"✅ Browser recovery successful! Resumed from page {recovery_page}")
+            return True
+            
+        except Exception as e:
+            print_to_csv(f"❌ Browser recovery failed: {str(e)}")
+            return False
+
+    def update_state_tracking(self, page_number, url):
+        """Update state tracking for recovery purposes."""
+        # If we're moving to a new page, clear the processed movies tracking
+        if self.page_number != page_number:
+            self.processed_movies_on_current_page.clear()
+            print_to_csv(f"📄 Moving to page {page_number}, cleared processed movies tracking.")
+        
+        self.page_number = page_number
+        self.current_url = url
+        self.last_successful_page = page_number
+
+    def reset_crash_counter(self):
+        """Reset the crash counter when a movie is successfully processed after recovery."""
+        if self.recovery_attempts > 0:
+            print_to_csv(f"🔄 Browser recovery successful! Reset crash counter from {self.recovery_attempts} to 0.")
+            self.recovery_attempts = 0
 
     def process_movie_data(self, info, film_title=None, film_url=None):
         """Process movie data from the whitelist using URL as the primary identifier."""
@@ -1227,6 +1338,13 @@ class LetterboxdScraper:
                 missing_fields = [field for field in required_fields if not info.get(field)]
                 if not info or info == {} or missing_fields:
                     try:
+                        # Check if browser is still responsive before loading movie page
+                        if not self.is_browser_responsive():
+                            print_to_csv("🚨 Browser crash detected while loading movie page! Attempting recovery...")
+                            if not self.recover_browser():
+                                print_to_csv("❌ Browser recovery failed. Skipping this movie.")
+                                return False
+                        
                         self.driver.get(film_url)
                         WebDriverWait(self.driver, 10).until(
                             EC.presence_of_element_located((By.CSS_SELECTOR, 'meta[property=\"og:title\"]'))
@@ -1386,6 +1504,10 @@ class LetterboxdScraper:
                 # Process the whitelist information regardless of MAX_MOVIES_5000 limit
                 self.processor.process_whitelist_info(info, film_url)
                 self.valid_movies_count += 1
+                # Track this movie as processed on current page for recovery purposes
+                self.processed_movies_on_current_page.add(film_url)
+                # Reset crash counter since we successfully processed a movie
+                self.reset_crash_counter()
                 print_to_csv(f"✅ Processed whitelist data for {film_title} ({self.valid_movies_count}/{MAX_MOVIES})")
                 
                 # 2% chance to clear the whitelist data for random auditing
@@ -1420,9 +1542,18 @@ class LetterboxdScraper:
             print_to_csv(f"\nLoading page {self.page_number}: {url}")
             
             # Send a GET request to the URL with retry mechanism
-            page_retries = 20
+            page_retries = 30  # Increased retry count
             for retry in range(page_retries):
                 try:
+                    # Check if browser is still responsive before attempting to navigate
+                    if not self.is_browser_responsive():
+                        print_to_csv("🚨 Browser crash detected! Attempting recovery...")
+                        if not self.recover_browser():
+                            print_to_csv("❌ Browser recovery failed. Exiting scraping.")
+                            return
+                        # After recovery, continue with the same page
+                        continue
+                    
                     self.driver.get(url)
                     
                     # Check if page loaded successfully
@@ -1438,9 +1569,16 @@ class LetterboxdScraper:
                             
                     except Exception as e:
                         print_to_csv(f"Warning: Could not get page title: {str(e)}")
+                        # This might indicate a browser crash
+                        if not self.is_browser_responsive():
+                            print_to_csv("🚨 Browser crash detected during page load! Attempting recovery...")
+                            if not self.recover_browser():
+                                print_to_csv("❌ Browser recovery failed. Exiting scraping.")
+                                return
+                            continue
                     
                     # Wait for the page to load
-                    WebDriverWait(self.driver, 10).until(
+                    WebDriverWait(self.driver, 15).until(  # Increased timeout
                         EC.presence_of_element_located((By.CSS_SELECTOR, 'li.posteritem'))
                     )
                     
@@ -1449,30 +1587,55 @@ class LetterboxdScraper:
                     if current_url != url and "page" not in current_url:
                         print_to_csv(f"⚠️ Page redirected from {url} to {current_url}")
                     
+                    # Update state tracking for successful page load
+                    self.update_state_tracking(self.page_number, url)
                     break
                 except Exception as e:
+                    # Check if this is a browser crash
+                    if not self.is_browser_responsive():
+                        print_to_csv("🚨 Browser crash detected during page load! Attempting recovery...")
+                        if not self.recover_browser():
+                            print_to_csv("❌ Browser recovery failed. Exiting scraping.")
+                            return
+                        # After recovery, continue with the same page
+                        continue
+                    
                     if retry == page_retries - 1:
                         print_to_csv(f"❌ Failed to load page after {page_retries} attempts: {str(e)}")
                         # Try to move to next page instead of crashing
                         print_to_csv(f"Moving to next page and continuing...")
                         self.page_number += 1
                         continue
-                    print_to_csv(f"Retry {retry + 1}/{page_retries} loading page {self.page_number}: {str(e)}")
-                    time.sleep(2)
                     
-                    # Additional error handling for network issues
-                    if "timeout" in str(e).lower() or "connection" in str(e).lower():
-                        print_to_csv(f"⚠️ Network issue detected, waiting longer before retry...")
-                        time.sleep(10)  # Wait longer for network issues
+                    # Calculate delay with exponential backoff
+                    delay = calculate_retry_delay(retry)
+                    is_network = is_network_error(e)
+                    
+                    if is_network:
+                        print_to_csv(f"🌐 Network error detected: {str(e)}")
+                        print_to_csv(f"Retry {retry + 1}/{page_retries} loading page {self.page_number} - waiting {delay:.1f}s...")
+                    else:
+                        print_to_csv(f"Retry {retry + 1}/{page_retries} loading page {self.page_number}: {str(e)} - waiting {delay:.1f}s...")
+                    
+                    time.sleep(delay)
             
             #time.sleep(random.uniform(1.0, 1.5))
                     
             # Find all film containers with retry mechanism
             film_containers = []
-            container_retries = 25  # Maximum number of retries
+            container_retries = 35  # Increased retry count
             for retry in range(container_retries):
                 try:
-                    film_containers = WebDriverWait(self.driver, 10).until(
+                    # Check if browser is still responsive before finding containers
+                    if not self.is_browser_responsive():
+                        print_to_csv("🚨 Browser crash detected while finding containers! Attempting recovery...")
+                        if not self.recover_browser():
+                            print_to_csv("❌ Browser recovery failed. Exiting scraping.")
+                            return
+                        # After recovery, continue with the same page
+                        continue
+                    
+                    film_containers = WebDriverWait(self.driver, 15).until(  # Increased timeout
                         EC.presence_of_all_elements_located((By.CSS_SELECTOR, 'li.posteritem'))
                     )
                     
@@ -1485,24 +1648,39 @@ class LetterboxdScraper:
                         break
                     else:
                         print_to_csv(f"Found only {len(film_containers)} containers, retrying... (Attempt {retry + 1}/{container_retries})")
-                        time.sleep(5)  # Wait longer between retries
+                        delay = calculate_retry_delay(retry, base_delay=3)  # Shorter base delay for container retries
+                        time.sleep(delay)
                         self.driver.refresh()  # Refresh the page
                         time.sleep(2)  # Wait for refresh
                 except Exception as e:
+                    # Check if this is a browser crash
+                    if not self.is_browser_responsive():
+                        print_to_csv("🚨 Browser crash detected while finding containers! Attempting recovery...")
+                        if not self.recover_browser():
+                            print_to_csv("❌ Browser recovery failed. Exiting scraping.")
+                            return
+                        # After recovery, continue with the same page
+                        continue
+                    
                     if retry == container_retries - 1:
                         print_to_csv(f"❌ Failed to find film containers after {container_retries} attempts: {str(e)}")
                         print_to_csv(f"Moving to next page and continuing...")
                         self.page_number += 1
                         continue
-                    print_to_csv(f"Retry {retry + 1}/{container_retries} finding film containers: {str(e)}")
-                    time.sleep(5)
+                    
+                    # Calculate delay with exponential backoff
+                    delay = calculate_retry_delay(retry, base_delay=3)
+                    is_network = is_network_error(e)
+                    
+                    if is_network:
+                        print_to_csv(f"🌐 Network error finding containers: {str(e)}")
+                        print_to_csv(f"Retry {retry + 1}/{container_retries} - waiting {delay:.1f}s...")
+                    else:
+                        print_to_csv(f"Retry {retry + 1}/{container_retries} finding film containers: {str(e)} - waiting {delay:.1f}s...")
+                    
+                    time.sleep(delay)
                     self.driver.refresh()
                     time.sleep(2)
-                    
-                    # Additional error handling for specific issues
-                    if "timeout" in str(e).lower():
-                        print_to_csv(f"⚠️ Timeout detected, waiting longer before retry...")
-                        time.sleep(10)  # Wait longer for timeouts
             
             if len(film_containers) < 30:  # More flexible threshold
                 print_to_csv(f"❌ Found only {len(film_containers)} film containers, which seems too low")
@@ -1516,6 +1694,14 @@ class LetterboxdScraper:
             film_data_list = []
             for container in film_containers:
                 try:
+                    # Check if browser is still responsive before processing each movie
+                    if not self.is_browser_responsive():
+                        print_to_csv("🚨 Browser crash detected while processing movies! Attempting recovery...")
+                        if not self.recover_browser():
+                            print_to_csv("❌ Browser recovery failed. Exiting scraping.")
+                            return
+                        # After recovery, we need to re-find the containers and continue
+                        break
                     # Get the anchor element first - look specifically for film links
                     anchor = container.find_element(By.CSS_SELECTOR, 'a[href*="/film/"]')
                     film_url = anchor.get_attribute('href')
@@ -1641,6 +1827,11 @@ class LetterboxdScraper:
                 # Get whitelist data using URL only
                 whitelist_info, _ = self.processor.get_whitelist_data(None, None, film_url)
 
+                # Check if this movie was already processed on the current page (for recovery scenarios)
+                if film_url in self.processed_movies_on_current_page:
+                    print_to_csv(f"⚠️ {film_title} was already processed on this page. Skipping.")
+                    continue
+
                 # After processing, add the title to seen_titles for reference only
                 seen_titles.add(film_title.lower())
 
@@ -1676,9 +1867,16 @@ class LetterboxdScraper:
                     continue
                                 
                 # Get initial movie data without full scrape
-                movie_retries = 5  # Reduced retries for better performance
+                movie_retries = 15  # Increased retries for better reliability
                 for retry in range(movie_retries):
                     try:
+                        # Check if browser is still responsive before loading movie page
+                        if not self.is_browser_responsive():
+                            print_to_csv("🚨 Browser crash detected while loading movie page! Attempting recovery...")
+                            if not self.recover_browser():
+                                print_to_csv("❌ Browser recovery failed. Skipping this movie.")
+                                break
+                        
                         self.driver.get(film_url)
                         
                         # Check if we got redirected to an error page
@@ -1795,8 +1993,17 @@ class LetterboxdScraper:
                             self.rejected_movies_count += 1  # Increment rejected counter
                             break  # Skip to next movie
                         else:
-                            print_to_csv(f"Retry {retry + 1}/{movie_retries} processing movie: {str(e)}")
-                            time.sleep(2)
+                            # Calculate delay with exponential backoff
+                            delay = calculate_retry_delay(retry, base_delay=2)
+                            is_network = is_network_error(e)
+                            
+                            if is_network:
+                                print_to_csv(f"🌐 Network error processing movie: {str(e)}")
+                                print_to_csv(f"Retry {retry + 1}/{movie_retries} - waiting {delay:.1f}s...")
+                            else:
+                                print_to_csv(f"Retry {retry + 1}/{movie_retries} processing movie: {str(e)} - waiting {delay:.1f}s...")
+                            
+                            time.sleep(delay)
                             continue
             
             self.page_number += 1
@@ -1907,6 +2114,10 @@ class LetterboxdScraper:
 
             # If we reach here, the movie is approved
             self.valid_movies_count += 1
+            # Track this movie as processed on current page for recovery purposes
+            self.processed_movies_on_current_page.add(film_url)
+            # Reset crash counter since we successfully processed a movie
+            self.reset_crash_counter()
             print_to_csv(f"✅ {film_title} was approved ({self.valid_movies_count}/{MAX_MOVIES})")
             
             # Add to unfiltered_approved
@@ -2764,6 +2975,10 @@ class LetterboxdScraper:
                     self.processor.process_whitelist_info(movie_data, film_url)
                     
                     self.valid_movies_count += 1
+                    # Track this movie as processed on current page for recovery purposes
+                    self.processed_movies_on_current_page.add(film_url)
+                    # Reset crash counter since we successfully processed a movie
+                    self.reset_crash_counter()
                     print_to_csv(f"✅ Processed whitelist data for {film_title} ({self.valid_movies_count}/{MAX_MOVIES})")
                     return movie_data
 
@@ -2781,6 +2996,8 @@ def main():
     
     # Run both popular and rating scraping
     scrape_types = ["popular", "rating"]
+    # scrape_types = ["rating"]
+    # scrape_types = ["popular"]
     
     for i, scrape_type in enumerate(scrape_types):
         scraper = None
