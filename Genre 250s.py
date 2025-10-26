@@ -672,6 +672,55 @@ def format_time(seconds):
     else:
         return f"{seconds}s"
 
+def is_retryable_error(error):
+    """Determine if an error should be retried based on error type and message."""
+    error_str = str(error).lower()
+    error_type = type(error).__name__.lower()
+    
+    # Non-retryable errors (permanent failures)
+    non_retryable_indicators = [
+        'keyboardinterrupt',
+        'systemexit',
+        'memoryerror',
+        'permission denied',
+        'file not found',
+        'invalid url',
+        'authentication failed',
+        'api key',
+        'credentials'
+    ]
+    
+    # Check for non-retryable errors
+    for indicator in non_retryable_indicators:
+        if indicator in error_str or indicator in error_type:
+            return False
+    
+    # Retryable errors (temporary failures)
+    retryable_indicators = [
+        'timeout',
+        'connection',
+        'network',
+        'temporary',
+        'service unavailable',
+        'too many requests',
+        'rate limit',
+        'server error',
+        'gateway',
+        'bad gateway',
+        'no such element',
+        'stale element',
+        'webdriver',
+        'selenium'
+    ]
+    
+    # Check for retryable errors
+    for indicator in retryable_indicators:
+        if indicator in error_str or indicator in error_type:
+            return True
+    
+    # Default to retryable for unknown errors
+    return True
+
 def extract_mpaa_rating(driver) -> Optional[str]:
     """Extract the MPAA rating from the movie's page if the country is USA."""
     try:
@@ -1798,8 +1847,11 @@ class LetterboxdScraper:
         self.processor.unfiltered_approved = []
         self.processor.unfiltered_denied = []
 
-    def save_results_emergency(self):
+    def save_results_emergency(self, genre=None, sort_type=None):
         """Save results without genre/sort_type parameters for error handling."""
+        # Create emergency identifier
+        emergency_id = f"Emergency_{genre}_{sort_type}" if genre and sort_type else "Emergency"
+        
         # Save unfiltered approved data (append mode)
         approved_path = os.path.join(BASE_DIR, 'unfiltered_approved.csv')
         with open(approved_path, mode='a', newline='', encoding='utf-8') as file:
@@ -1810,7 +1862,7 @@ class LetterboxdScraper:
             for movie in self.processor.unfiltered_approved:
                 # Ensure we have at least title, year, and URL
                 if len(movie) >= 4:
-                    writer.writerow([movie[0], movie[1], '', movie[3], 'Emergency'])
+                    writer.writerow([movie[0], movie[1], '', movie[3], emergency_id])
                 else:
                     print_to_csv(f"Warning: Movie data incomplete for {movie[0] if movie else 'Unknown'}")
 
@@ -1823,70 +1875,124 @@ class LetterboxdScraper:
                 writer.writerow(['Title', 'Year', 'Blank', 'URL', 'Emergency'])
             for movie in self.processor.unfiltered_denied:
                 if len(movie) >= 4:
-                    writer.writerow([movie[0], movie[1], '', movie[3], 'Emergency'])
+                    writer.writerow([movie[0], movie[1], '', movie[3], emergency_id])
                 else:
                     print_to_csv(f"Warning: Movie data incomplete for {movie[0] if movie else 'Unknown'}")
 
 def main():
+    """
+    Main function that processes all genre/sort type combinations with retry logic.
+    
+    Key features:
+    - Retries failed genre/sort combinations up to MAX_RETRIES times
+    - Distinguishes between retryable and non-retryable errors
+    - Ensures full output for each combination before moving to the next
+    - Uses exponential backoff for retry delays
+    - Saves emergency results for failed combinations
+    """
     global current_scraper
     genres = ["action", "adventure", "animation", "comedy", "crime", "drama", "family", "fantasy", "history", "horror", "music", "mystery", "romance", "science-fiction", "thriller", "war", "western"]  # List of genres to iterate through
+    # genres =['history', 'war'] # Test only some genres
 
     start_time = time.time()
+    MAX_RETRIES = 10  # Maximum number of retries for each genre/sort combination
     
     for genre in genres:
         for sort_type in ["rating", "popular"]:  # Loop through both "rating" and "popular"
-            scraper = None
-            try:
-                print_to_csv(f"\n{'Starting new genre/sort combination':=^100}")
-                print_to_csv(f"Genre: {genre}, Sort: {sort_type}")
-                
-                scraper = LetterboxdScraper()
-                # Update global variable for signal handler
-                current_scraper = scraper
-                
-                scraper.base_url = f'https://letterboxd.com/films/genre/{genre}/by/{sort_type}/'  # Update base URL for the genre and sort type
-                scraper.reset_MAX_MOVIES_stats()  # Reset statistics for new genre/sort type
-                scraper.reset_counters()  # Reset counters for new genre/sort type
-                scraper.scrape_movies()
-                scraper.save_results(genre, sort_type)  # Pass genre and sort_type to save_results
+        # for sort_type in ["rating"]: # Test only one sort type
+            retry_count = 0
+            success = False
+            
+            while retry_count <= MAX_RETRIES and not success:
+                scraper = None
+                try:
+                    if retry_count > 0:
+                        print_to_csv(f"\n{'Retrying genre/sort combination':=^100}")
+                        print_to_csv(f"Genre: {genre}, Sort: {sort_type} (Attempt {retry_count + 1}/{MAX_RETRIES + 1})")
+                    else:
+                        print_to_csv(f"\n{'Starting new genre/sort combination':=^100}")
+                        print_to_csv(f"Genre: {genre}, Sort: {sort_type}")
+                    
+                    scraper = LetterboxdScraper()
+                    # Update global variable for signal handler
+                    current_scraper = scraper
+                    
+                    scraper.base_url = f'https://letterboxd.com/films/genre/{genre}/by/{sort_type}/'  # Update base URL for the genre and sort type
+                    scraper.reset_MAX_MOVIES_stats()  # Reset statistics for new genre/sort type
+                    scraper.reset_counters()  # Reset counters for new genre/sort type
+                    scraper.scrape_movies()
+                    scraper.save_results(genre, sort_type)  # Pass genre and sort_type to save_results
 
-                # Format final statistics
-                print_to_csv(f"\n{'Final Statistics':=^100}")
-                print_to_csv(f"{'Total movies scraped:':<30} {scraper.total_titles:>10}")
-                print_to_csv(f"{'Total accepted:':<30} {scraper.valid_movies_count:>10}")
-                print_to_csv(f"{'Total rejected:':<30} {scraper.rejected_movies_count:>10}")  # Use counter instead of len(rejected_data)
-                print_to_csv(f"{'Total unfiltered approved:':<30} {len(scraper.processor.unfiltered_approved):>10}")
-                print_to_csv(f"{'Total unfiltered denied:':<30} {len(scraper.processor.unfiltered_denied):>10}")
+                    # Format final statistics
+                    print_to_csv(f"\n{'Final Statistics':=^100}")
+                    print_to_csv(f"{'Total movies scraped:':<30} {scraper.total_titles:>10}")
+                    print_to_csv(f"{'Total accepted:':<30} {scraper.valid_movies_count:>10}")
+                    print_to_csv(f"{'Total rejected:':<30} {scraper.rejected_movies_count:>10}")  # Use counter instead of len(rejected_data)
+                    print_to_csv(f"{'Total unfiltered approved:':<30} {len(scraper.processor.unfiltered_approved):>10}")
+                    print_to_csv(f"{'Total unfiltered denied:':<30} {len(scraper.processor.unfiltered_denied):>10}")
 
-                # Format execution time
-                execution_time = time.time() - start_time
-                print_to_csv(f"\n{'Execution Summary':=^100}")
-                print_to_csv(f"Total execution time: {format_time(execution_time)}")
-                print_to_csv(f"Average processing speed: {scraper.valid_movies_count / execution_time:.2f} movies/second")
+                    # Format execution time
+                    execution_time = time.time() - start_time
+                    print_to_csv(f"\n{'Execution Summary':=^100}")
+                    print_to_csv(f"Total execution time: {format_time(execution_time)}")
+                    print_to_csv(f"Average processing speed: {scraper.valid_movies_count / execution_time:.2f} movies/second")
+                    
+                    # Mark as successful
+                    success = True
+                    print_to_csv(f"✅ Successfully completed {genre} {sort_type}")
 
-            except Exception as e:
-                print_to_csv(f"\n{'Error':=^100}")
-                print_to_csv(f"❌ An error occurred during execution: {e}")
-                print_to_csv(f"Error type: {type(e).__name__}")
-                print_to_csv(f"Error details: {str(e)}")
-            finally:
-                # Always try to clean up the scraper
-                if scraper is not None:
-                    try:
-                        print_to_csv("Cleaning up scraper...")
-                        scraper.driver.quit()
-                        print_to_csv("Scraper cleaned up successfully")
-                        # Clear global variable
-                        current_scraper = None
-                    except Exception as cleanup_error:
-                        print_to_csv(f"Error during cleanup: {cleanup_error}")
-                        # Force quit if normal quit fails
+                except Exception as e:
+                    retry_count += 1
+                    print_to_csv(f"\n{'Error':=^100}")
+                    print_to_csv(f"❌ An error occurred during execution: {e}")
+                    print_to_csv(f"Error type: {type(e).__name__}")
+                    print_to_csv(f"Error details: {str(e)}")
+                    
+                    # Check if error is retryable
+                    if not is_retryable_error(e):
+                        print_to_csv(f"❌ Non-retryable error detected. Moving to next combination.")
+                        # Save emergency results for this failed combination
+                        if scraper is not None:
+                            try:
+                                scraper.save_results_emergency(genre, sort_type)
+                                print_to_csv(f"💾 Emergency results saved for {genre} {sort_type}")
+                            except Exception as save_error:
+                                print_to_csv(f"❌ Failed to save emergency results: {save_error}")
+                        break  # Exit retry loop
+                    
+                    if retry_count <= MAX_RETRIES:
+                        print_to_csv(f"🔄 Will retry {genre} {sort_type} (Attempt {retry_count + 1}/{MAX_RETRIES + 1})")
+                        # Wait before retrying
+                        wait_time = min(30 * retry_count, 120)  # Exponential backoff, max 2 minutes
+                        print_to_csv(f"⏳ Waiting {wait_time} seconds before retry...")
+                        time.sleep(wait_time)
+                    else:
+                        print_to_csv(f"❌ Failed to complete {genre} {sort_type} after {MAX_RETRIES + 1} attempts. Moving to next combination.")
+                        # Save emergency results for this failed combination
+                        if scraper is not None:
+                            try:
+                                scraper.save_results_emergency(genre, sort_type)
+                                print_to_csv(f"💾 Emergency results saved for {genre} {sort_type}")
+                            except Exception as save_error:
+                                print_to_csv(f"❌ Failed to save emergency results: {save_error}")
+                finally:
+                    # Always try to clean up the scraper
+                    if scraper is not None:
                         try:
-                            scraper.driver.service.process.kill()
-                        except:
-                            pass
-                        # Clear global variable
-                        current_scraper = None
+                            print_to_csv("Cleaning up scraper...")
+                            scraper.driver.quit()
+                            print_to_csv("Scraper cleaned up successfully")
+                            # Clear global variable
+                            current_scraper = None
+                        except Exception as cleanup_error:
+                            print_to_csv(f"Error during cleanup: {cleanup_error}")
+                            # Force quit if normal quit fails
+                            try:
+                                scraper.driver.service.process.kill()
+                            except:
+                                pass
+                            # Clear global variable
+                            current_scraper = None
 
 if __name__ == "__main__":
     main()

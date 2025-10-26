@@ -59,6 +59,44 @@ def log_and_print(message: str):
         writer = csv.writer(file)
         writer.writerow([message])  # Write the message as a new row
 
+def safe_click_import_button(driver, log_and_print_func):
+    """
+    Safely click the import button with proper waiting and retry logic.
+    This prevents the 'saving' element from obscuring the button.
+    """
+    log_and_print_func("✅ Clicking the Import button.")
+    
+    # Wait a bit for any ongoing operations to complete
+    time.sleep(5)
+    
+    # Retry mechanism for clicking import button
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            # Check if saving indicator exists and wait briefly for it to disappear
+            saving_elements = driver.find_elements(By.CSS_SELECTOR, ".saving")
+            if saving_elements:
+                log_and_print_func("✅ Saving indicator detected, waiting briefly...")
+                time.sleep(3)  # Brief wait for saving to complete
+            
+            # Find and click the import button
+            import_button = driver.find_element(By.CSS_SELECTOR, ".list-import-link")
+            
+            # Check if element is clickable with a shorter timeout
+            WebDriverWait(driver, 5).until(EC.element_to_be_clickable((By.CSS_SELECTOR, ".list-import-link")))
+            import_button.click()
+            log_and_print_func("✅ Successfully clicked import button.")
+            break
+            
+        except Exception as e:
+            log_and_print_func(f"⚠️ Attempt {attempt + 1} failed to click import button: {str(e)}")
+            if attempt < max_retries - 1:
+                time.sleep(3)  # Shorter wait between retries
+            else:
+                raise e
+    
+    time.sleep(2)
+
 def update_letterboxd_lists():
     # Load credentials
     credentials = load_credentials()
@@ -205,10 +243,7 @@ def update_letterboxd_lists():
                 time.sleep(2)
 
                 # Step 1: Click the Import button
-                log_and_print("✅ Clicking the Import button.")
-                import_button = driver.find_element(By.CSS_SELECTOR, ".list-import-link")
-                import_button.click()
-                time.sleep(2)
+                safe_click_import_button(driver, log_and_print)
 
                 # Step 2: Select the correct CSV file
                 csv_file_name = f"{list_name}.csv"
@@ -360,10 +395,7 @@ def update_letterboxd_lists():
                 time.sleep(2) 
 
                 # Step 1: Click the Import button
-                log_and_print("✅ Clicking the Import button.")
-                import_button = driver.find_element(By.CSS_SELECTOR, ".list-import-link")
-                import_button.click()
-                time.sleep(2)  
+                safe_click_import_button(driver, log_and_print)  
 
                 # Step 2: Select the correct CSV file
                 csv_file_name = f"{list_name}.csv"
@@ -480,10 +512,7 @@ def update_letterboxd_lists():
                 time.sleep(2)  
 
                 # Step 1: Click the Import button
-                log_and_print("✅ Clicking the Import button.")
-                import_button = driver.find_element(By.CSS_SELECTOR, ".list-import-link")
-                import_button.click()
-                time.sleep(2)  
+                safe_click_import_button(driver, log_and_print)  
 
                 # Step 2: Import the first CSV file
                 log_and_print("✅ Importing the first CSV file.")
@@ -597,9 +626,7 @@ def update_letterboxd_lists():
 
                 # Step 8: Click the Import button again
                 log_and_print("✅ Clicking the Import button for the second time.")
-                import_button = driver.find_element(By.CSS_SELECTOR, ".list-import-link")
-                import_button.click()
-                time.sleep(2)  
+                safe_click_import_button(driver, log_and_print)  
 
                 # Step 9: Import the second CSV file
                 log_and_print("✅ Importing the second CSV file.")
@@ -666,9 +693,7 @@ def update_letterboxd_lists():
 
                 # Step 13: Click the Import button for the third time
                 log_and_print("✅ Clicking the Import button for the third time.")
-                import_button = driver.find_element(By.CSS_SELECTOR, ".list-import-link")
-                import_button.click()
-                time.sleep(2)  
+                safe_click_import_button(driver, log_and_print)  
 
                 # Step 14: Import the third CSV file
                 log_and_print("✅ Importing the third CSV file.")
