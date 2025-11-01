@@ -141,6 +141,7 @@ def update_letterboxd_lists():
         "2_Hours_or_Less_top_movies": "https://letterboxd.com/bigbadraj/list/the-top-250-highest-rated-films-of-120-minutes/edit/",
         "3_Hours_or_Greater_top_movies": "https://letterboxd.com/bigbadraj/list/the-top-150-highest-rated-films-of-180-minutes/edit/",
         "4_Hours_or_Greater_top_movies": "https://letterboxd.com/bigbadraj/list/the-top-20-highest-rated-films-of-240-minutes/edit/",
+        "top_250_action_popular": "https://letterboxd.com/bigbadraj/list/top-250-most-popular-action-narrative-feature/edit/",
         "top_250_adventure_popular": "https://letterboxd.com/bigbadraj/list/top-250-most-popular-adventure-narrative/edit/",
         "top_250_animation_popular": "https://letterboxd.com/bigbadraj/list/top-250-most-popular-animation-narrative/edit/",
         "top_250_comedy_popular": "https://letterboxd.com/bigbadraj/list/top-250-most-popular-comedy-narrative-feature/edit/",
