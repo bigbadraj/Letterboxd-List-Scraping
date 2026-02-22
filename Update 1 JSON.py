@@ -114,8 +114,8 @@ def process_page(session, url, max_films, progress_tracker):
         
         soup = BeautifulSoup(response.content, 'html.parser')
         
-        # Updated selector
-        film_list = soup.find('ul', class_='poster-list')
+        # Updated selector for new Letterboxd HTML structure (same as Update JSONs)
+        film_list = soup.find('ul', class_='poster-list') or soup.find('div', class_='poster-list')
 
         if not film_list:
             print("Film list not found on page.")
@@ -125,7 +125,9 @@ def process_page(session, url, max_films, progress_tracker):
         with ThreadPoolExecutor(max_workers=5) as executor:
             futures = []
             # Look for the new posteritem structure
-            for li in film_list.find_all('li', class_='posteritem'):
+            film_items = film_list.find_all('li', class_='posteritem')
+            
+            for li in film_items:
                 # Extract movie information from the inner div with data attributes
                 # The data attributes are on the inner div, not the li element
                 inner_div = li.find('div', class_='react-component')
@@ -302,6 +304,8 @@ def main():
     process_single_list(base_url, output_json, progress_tracker=progress_tracker, update_github=True)
 
 def process_single_list(base_url, output_json, progress_tracker, max_films=None, update_github=True):
+    # Normalize base_url with trailing slash (same as Update JSONs list URLs)
+    base_url = base_url.rstrip('/') + '/'
     session = create_session()
     all_data = ThreadSafeList()
     current_page = 1
@@ -319,9 +323,8 @@ def process_single_list(base_url, output_json, progress_tracker, max_films=None,
         bar_format="{desc}: {percentage:3.0f}% |{bar}| {n_fmt}/{total_fmt} pages"
     ) as pbar:
         while True:
-            # Ensure base_url ends with / for proper URL construction
-            base_url_normalized = base_url.rstrip('/')
-            page_url = f"{base_url_normalized}/page/{current_page}/" if current_page > 1 else base_url_normalized
+            # Same page URL construction as Update JSONs
+            page_url = f"{base_url}page/{current_page}/" if current_page > 1 else base_url
             print(f"\n{f' Page {current_page}/{total_pages} ':=^100}")
             has_next, page_data = process_page(session, page_url, max_films, progress_tracker)
             
