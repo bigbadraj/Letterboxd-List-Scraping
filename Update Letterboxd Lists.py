@@ -30,7 +30,7 @@ def get_os_specific_paths():
     
     if system == "Windows":
         # Windows paths
-        base_dir = r'C:\Users\bigba\aa Personal Projects\Letterboxd List Scraping'
+        base_dir = r'C:\Users\bigba\aa Personal Projects\Letterboxd-List-Scraping'
         output_dir = os.path.join(base_dir, 'Outputs')
     elif system == "Darwin":  # macOS
         # macOS paths
@@ -243,26 +243,23 @@ def update_letterboxd_lists():
                 driver.get(edit_url)
                 time.sleep(2)
 
-                # Step 1: Click the Import button
-                safe_click_import_button(driver, log_and_print)
-
-                # Step 2: Select the correct CSV file
+                # Step 1: Check if the CSV file exists before attempting to upload
                 csv_file_name = f"{list_name}.csv"
                 csv_file_path = os.path.join(output_dir, csv_file_name)
 
-                # Check if the CSV file exists before attempting to upload
                 if not os.path.exists(csv_file_path):
                     log_and_print(f"❌ CSV file not found: {csv_file_name}")
                     log_and_print(f"❌ Skipping list update for {list_name} - file does not exist")
-                    # Close the file dialog by pressing Escape
-                    pyautogui.press('escape')
-                    time.sleep(1)
                     results.append({
                         'list_name': list_name,
                         'status': f'Failed to update: CSV file {csv_file_name} not found'
                     })
                     continue
 
+                # Step 2: Click the Import button
+                safe_click_import_button(driver, log_and_print)
+
+                # Step 3: Select the correct CSV file
                 log_and_print(f"✅ Selecting CSV file: {csv_file_name}")
                 time.sleep(1)
 
@@ -270,19 +267,19 @@ def update_letterboxd_lists():
                 pyautogui.hotkey('alt', 'd')
                 time.sleep(1)
 
-                # Type the path to the Outputs folder
+                # Type the folder path to navigate to the Outputs folder
                 pyautogui.typewrite(output_dir, interval=0.1)
-                pyautogui.press('enter')  # Navigate to the Outputs folder
-                time.sleep(1) 
+                pyautogui.press('enter')  # Navigate to the folder
+                time.sleep(1)
 
-                # Click into the search field of the Outputs folder
-                pyautogui.click(x=300, y=200)  
-                time.sleep(1) 
-
-                # Select the correct CSV file
-                pyautogui.typewrite(csv_file_name, interval=0.1) 
+                # Use Alt + N to focus on the filename box at the bottom of the file dialog
+                pyautogui.hotkey('alt', 'n')
+                time.sleep(0.5)
+                
+                # Type the filename to filter/search for it (Windows file dialogs filter as you type)
+                pyautogui.typewrite(csv_file_name, interval=0.1)
                 time.sleep(1)  
-                pyautogui.press('enter')
+                pyautogui.press('enter')  # Select the filtered file
 
                 time.sleep(2)  
 
@@ -304,8 +301,10 @@ def update_letterboxd_lists():
                     else:
                         log_and_print(f"No matching text files found for {list_name}. Attempting again.")
                         # Simulate typing the text file name to find it again
-                        pyautogui.click(x=300, y=200)
                         time.sleep(1)
+                        # Use Alt + N to focus on the filename box at the bottom of the file dialog
+                        pyautogui.hotkey('alt', 'n')
+                        time.sleep(0.5)
                         pyautogui.typewrite(f"{list_name}*.txt", interval=0.1)  
                         time.sleep(1)
                         pyautogui.press('enter')
@@ -395,25 +394,23 @@ def update_letterboxd_lists():
                 driver.get(details["url"])
                 time.sleep(2) 
 
-                # Step 1: Click the Import button
-                safe_click_import_button(driver, log_and_print)  
-
-                # Step 2: Select the correct CSV file
+                # Step 1: Check if the CSV file exists before attempting to upload
                 csv_file_name = f"{list_name}.csv"
                 csv_file_path = os.path.join(output_dir, csv_file_name)
 
-                # Check if the CSV file exists before attempting to upload
                 if not os.path.exists(csv_file_path):
                     log_and_print(f"❌ CSV file not found: {csv_file_name}")
                     log_and_print(f"❌ Skipping list update for {list_name} - file does not exist")
-                    # Close the file dialog by pressing Escape
-                    pyautogui.press('escape')
-                    time.sleep(1)
                     results.append({
                         'list_name': list_name,
                         'status': f'Failed to update: CSV file {csv_file_name} not found'
                     })
                     continue
+
+                # Step 2: Click the Import button
+                safe_click_import_button(driver, log_and_print)  
+
+                # Step 3: Select the correct CSV file
 
                 log_and_print(f"✅ Selecting CSV file: {csv_file_name}")
                 time.sleep(1) 
@@ -422,19 +419,19 @@ def update_letterboxd_lists():
                 pyautogui.hotkey('alt', 'd')
                 time.sleep(1) 
 
-                # Type the path to the Outputs folder
+                # Type the folder path to navigate to the Outputs folder
                 pyautogui.typewrite(output_dir, interval=0.1)
-                pyautogui.press('enter')  
+                pyautogui.press('enter')  # Navigate to the folder
+                time.sleep(1)
+
+                # Use Alt + N to focus on the filename box at the bottom of the file dialog
+                pyautogui.hotkey('alt', 'n')
+                time.sleep(0.5)
+                
+                # Type the filename to filter/search for it (Windows file dialogs filter as you type)
+                pyautogui.typewrite(csv_file_name, interval=0.1)
                 time.sleep(1)  
-
-                # Click into the search field of the Outputs folder
-                pyautogui.click(x=300, y=200)  
-                time.sleep(1) 
-
-                # Select the correct CSV file
-                pyautogui.typewrite(csv_file_name, interval=0.1) 
-                time.sleep(1) 
-                pyautogui.press('enter')  
+                pyautogui.press('enter')  # Select the filtered file
                 time.sleep(30)  
 
                 # Step 4: Click the "Hide Successful Matches" button
@@ -512,26 +509,25 @@ def update_letterboxd_lists():
                 driver.get(details["url"])
                 time.sleep(2)  
 
-                # Step 1: Click the Import button
-                safe_click_import_button(driver, log_and_print)  
-
-                # Step 2: Import the first CSV file
-                log_and_print("✅ Importing the first CSV file.")
+                # Step 1: Check if the first CSV file exists before attempting to upload
+                log_and_print("✅ Checking first CSV file.")
                 csv_file_name = details["csv_file_name_1"]
                 csv_file_path = os.path.join(output_dir, csv_file_name)
 
-                # Check if the CSV file exists before attempting to upload
                 if not os.path.exists(csv_file_path):
                     log_and_print(f"❌ CSV file not found: {csv_file_name}")
                     log_and_print(f"❌ Skipping special list update for {list_name} - file does not exist")
-                    # Close the file dialog by pressing Escape
-                    pyautogui.press('escape')
-                    time.sleep(1)
                     results.append({
                         'list_name': list_name,
                         'status': f'Failed to update: CSV file {csv_file_name} not found'
                     })
                     continue
+
+                # Step 2: Click the Import button
+                safe_click_import_button(driver, log_and_print)  
+
+                # Step 3: Import the first CSV file
+                log_and_print("✅ Importing the first CSV file.")
 
                 log_and_print(f"✅ Selecting CSV file: {csv_file_name}")
                 time.sleep(1)  
@@ -540,21 +536,21 @@ def update_letterboxd_lists():
                 pyautogui.hotkey('alt', 'd')
                 time.sleep(1) 
 
-                # Type the path to the Outputs folder
+                # Type the folder path to navigate to the Outputs folder
                 pyautogui.typewrite(output_dir, interval=0.1)
-                pyautogui.press('enter')  
-                time.sleep(1)  
+                pyautogui.press('enter')  # Navigate to the folder
+                time.sleep(1)
 
-                # Click into the search field of the Outputs folder
-                pyautogui.click(x=300, y=200)  
+                # Use Alt + N to focus on the filename box at the bottom of the file dialog
+                pyautogui.hotkey('alt', 'n')
+                time.sleep(0.5)
+                
+                # Type the filename to filter/search for it (Windows file dialogs filter as you type)
+                pyautogui.typewrite(csv_file_name, interval=0.1)
                 time.sleep(1)  
+                pyautogui.press('enter')  # Select the filtered file
 
-                # Select the correct CSV file
-                pyautogui.typewrite(csv_file_name, interval=0.1) 
-                time.sleep(1)  
-                pyautogui.press('enter')  
-
-                time.sleep(30)  
+                time.sleep(60)  
 
                 # Attempt to find and copy the associated txt file
                 file_found = False
@@ -573,8 +569,9 @@ def update_letterboxd_lists():
                         file_found = True
                     else:
                         log_and_print(f"No matching text files found for {list_name}. Attempting again.")
-                        pyautogui.click(x=300, y=200)  
-                        time.sleep(1)  
+                        # Use Alt + N to focus on the filename box at the bottom of the file dialog
+                        pyautogui.hotkey('alt', 'n')
+                        time.sleep(0.5)
                         pyautogui.typewrite(f"{list_name[:15]}*.txt", interval=0.1) 
                         time.sleep(1) 
                         pyautogui.press('enter')  
@@ -623,29 +620,28 @@ def update_letterboxd_lists():
                 time.sleep(15)
                 log_and_print("✅ Saving the changes for the first import.");
                 driver.find_element(By.ID, "list-edit-save").click()
-                time.sleep(15)  
+                time.sleep(60)  
 
-                # Step 8: Click the Import button again
-                log_and_print("✅ Clicking the Import button for the second time.")
-                safe_click_import_button(driver, log_and_print)  
-
-                # Step 9: Import the second CSV file
-                log_and_print("✅ Importing the second CSV file.")
+                # Step 8: Check if the second CSV file exists before attempting to upload
+                log_and_print("✅ Checking second CSV file.")
                 csv_file_name = details["csv_file_name_2"]
                 csv_file_path = os.path.join(output_dir, csv_file_name)
 
-                # Check if the CSV file exists before attempting to upload
                 if not os.path.exists(csv_file_path):
                     log_and_print(f"❌ CSV file not found: {csv_file_name}")
                     log_and_print(f"❌ Skipping second CSV import for {list_name} - file does not exist")
-                    # Close the file dialog by pressing Escape
-                    pyautogui.press('escape')
-                    time.sleep(1)
                     results.append({
                         'list_name': list_name,
                         'status': f'Failed to update: CSV file {csv_file_name} not found'
                     })
                     continue
+
+                # Step 9: Click the Import button again
+                log_and_print("✅ Clicking the Import button for the second time.")
+                safe_click_import_button(driver, log_and_print)  
+
+                # Step 10: Import the second CSV file
+                log_and_print("✅ Importing the second CSV file.")
 
                 log_and_print(f"✅ Selecting CSV file: {csv_file_name}")
                 time.sleep(1)  
@@ -654,23 +650,23 @@ def update_letterboxd_lists():
                 pyautogui.hotkey('alt', 'd')
                 time.sleep(1) 
 
-                # Type the path to the Outputs folder
+                # Type the folder path to navigate to the Outputs folder
                 pyautogui.typewrite(output_dir, interval=0.1)
-                pyautogui.press('enter')  
+                pyautogui.press('enter')  # Navigate to the folder
+                time.sleep(1)
+
+                # Use Alt + N to focus on the filename box at the bottom of the file dialog
+                pyautogui.hotkey('alt', 'n')
+                time.sleep(0.5)
+                
+                # Type the filename to filter/search for it (Windows file dialogs filter as you type)
+                pyautogui.typewrite(csv_file_name, interval=0.1)
                 time.sleep(1)  
+                pyautogui.press('enter')  # Select the filtered file
 
-                # Click into the search field of the Outputs folder
-                pyautogui.click(x=300, y=200)  
-                time.sleep(1)  
+                time.sleep(60)  
 
-                # Select the correct CSV file
-                pyautogui.typewrite(csv_file_name, interval=0.1) 
-                time.sleep(1)  
-                pyautogui.press('enter')  
-
-                time.sleep(30)  
-
-                # Step 10: Click the "Hide Successful Matches" button again
+                # Step 11: Click the "Hide Successful Matches" button again
                 try:
                     hide_successful_matches_handle = driver.find_element(By.CSS_SELECTOR, ".import-toggle .handle")
                     hide_successful_matches_handle.click()
@@ -690,29 +686,28 @@ def update_letterboxd_lists():
                 time.sleep(1)
                 log_and_print("✅ Saving the changes for the second import.")
                 driver.find_element(By.ID, "list-edit-save").click()
-                time.sleep(25)  
+                time.sleep(60)  
 
-                # Step 13: Click the Import button for the third time
-                log_and_print("✅ Clicking the Import button for the third time.")
-                safe_click_import_button(driver, log_and_print)  
-
-                # Step 14: Import the third CSV file
-                log_and_print("✅ Importing the third CSV file.")
+                # Step 13: Check if the third CSV file exists before attempting to upload
+                log_and_print("✅ Checking third CSV file.")
                 csv_file_name = details["csv_file_name_3"]
                 csv_file_path = os.path.join(output_dir, csv_file_name)
 
-                # Check if the CSV file exists before attempting to upload
                 if not os.path.exists(csv_file_path):
                     log_and_print(f"❌ CSV file not found: {csv_file_name}")
                     log_and_print(f"❌ Skipping third CSV import for {list_name} - file does not exist")
-                    # Close the file dialog by pressing Escape
-                    pyautogui.press('escape')
-                    time.sleep(1)
                     results.append({
                         'list_name': list_name,
                         'status': f'Failed to update: CSV file {csv_file_name} not found'
                     })
                     continue
+
+                # Step 14: Click the Import button for the third time
+                log_and_print("✅ Clicking the Import button for the third time.")
+                safe_click_import_button(driver, log_and_print)  
+
+                # Step 15: Import the third CSV file
+                log_and_print("✅ Importing the third CSV file.")
 
                 log_and_print(f"✅ Selecting CSV file: {csv_file_name}")
                 time.sleep(1)  
@@ -721,23 +716,23 @@ def update_letterboxd_lists():
                 pyautogui.hotkey('alt', 'd')
                 time.sleep(1) 
 
-                # Type the path to the Outputs folder
+                # Type the folder path to navigate to the Outputs folder
                 pyautogui.typewrite(output_dir, interval=0.1)
-                pyautogui.press('enter')  
+                pyautogui.press('enter')  # Navigate to the folder
+                time.sleep(1)
+
+                # Use Alt + N to focus on the filename box at the bottom of the file dialog
+                pyautogui.hotkey('alt', 'n')
+                time.sleep(0.5)
+                
+                # Type the filename to filter/search for it (Windows file dialogs filter as you type)
+                pyautogui.typewrite(csv_file_name, interval=0.1)
                 time.sleep(1)  
+                pyautogui.press('enter')  # Select the filtered file
 
-                # Click into the search field of the Outputs folder
-                pyautogui.click(x=300, y=200)  
-                time.sleep(1)  
+                time.sleep(60)  
 
-                # Select the correct CSV file
-                pyautogui.typewrite(csv_file_name, interval=0.1) 
-                time.sleep(1)  
-                pyautogui.press('enter')  
-
-                time.sleep(30)  
-
-                # Step 15: Click the "Hide Successful Matches" button again
+                # Step 16: Click the "Hide Successful Matches" button again
                 try:
                     hide_successful_matches_handle = driver.find_element(By.CSS_SELECTOR, ".import-toggle .handle")
                     hide_successful_matches_handle.click()
@@ -747,17 +742,17 @@ def update_letterboxd_lists():
 
                 time.sleep(7)
 
-                # Step 16: Click the "Add films to list" button again
+                # Step 17: Click the "Add films to list" button again
                 log_and_print("✅ Clicking the 'Add films to list' button.")
                 add_films_button = driver.find_element(By.CSS_SELECTOR, ".add-import-films-to-list")
                 add_films_button.click()
                 time.sleep(5)   
 
-                # Step 17: Save the changes for the third import
+                # Step 18: Save the changes for the third import
                 time.sleep(1)
                 log_and_print("✅ Saving the changes for the third import.")
                 driver.find_element(By.ID, "list-edit-save").click()
-                time.sleep(15)   
+                time.sleep(60)   
 
                 log_and_print(f"✅ Successfully updated special list: {list_name}")
                 # Append success result for special list

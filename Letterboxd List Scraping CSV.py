@@ -27,7 +27,7 @@ def get_os_specific_paths():
     
     if system == "Windows":
         # Windows paths
-        base_dir = r'C:\Users\bigba\aa Personal Projects\Letterboxd List Scraping'
+        base_dir = r'C:\Users\bigba\aa Personal Projects\Letterboxd-List-Scraping'
         output_dir = os.path.join(base_dir, 'Outputs')
     elif system == "Darwin":  # macOS
         # macOS paths

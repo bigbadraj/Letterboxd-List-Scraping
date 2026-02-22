@@ -32,7 +32,7 @@ def get_os_specific_paths():
     
     if system == "Windows":
         # Windows paths
-        base_dir = r'C:\Users\bigba\aa Personal Projects\Letterboxd List Scraping'
+        base_dir = r'C:\Users\bigba\aa Personal Projects\Letterboxd-List-Scraping'
         output_dir = os.path.join(base_dir, 'Outputs')
     elif system == "Darwin":  # macOS
         # macOS paths
@@ -662,7 +662,7 @@ class MovieProcessor:
             if add_to_runtime_stats(category, film_title, release_year, tmdb_id, film_url):
                 self.update_runtime_statistics(film_title, release_year, tmdb_id, driver, category, film_url)
 
-    def update_runtime_statistics(self, film_title: str, release_year: str, tmdb_id: str, driver, category: str, film_url: str = None):
+    def update_runtime_statistics(self, film_title: str, release_year: str, tmdb_id: str, driver_or_data, category: str, film_url: str = None):
         """Update statistics for the given runtime category."""
         # Get the most recently added movie from the runtime category's film_data
         if not runtime_stats[category]['film_data']:
@@ -673,10 +673,14 @@ class MovieProcessor:
         release_year = latest_movie['Year']
         film_url = latest_movie['Link']  # Get URL from the movie data
         
-        # Get the movie info from whitelist using URL
-        movie_info, _ = self.get_whitelist_data(None, None, film_url)
-        if not movie_info:
-            return
+        # Use cached data if provided (dict), otherwise get from whitelist
+        if isinstance(driver_or_data, dict):
+            movie_info = driver_or_data
+        else:
+            # Get the movie info from whitelist using URL
+            movie_info, _ = self.get_whitelist_data(None, None, film_url)
+            if not movie_info:
+                return
         
         # Update directors
         for director in movie_info.get('Directors', []):
@@ -1026,13 +1030,129 @@ def format_time(seconds):
     else:
         return f"{seconds}s"
 
+def extract_all_movie_data(driver) -> Optional[Dict]:
+    """Extract all movie data in a single JavaScript execution for maximum efficiency."""
+    try:
+        js_script = """
+        const data = {
+            // Basic info
+            metaTitle: document.querySelector('meta[property="og:title"]')?.content || '',
+            tmdbId: document.querySelector('[data-tmdb-id]')?.getAttribute('data-tmdb-id') || '',
+            ratingCount: 0,
+            
+            // Runtime
+            runtime: (() => {
+                const runtimeEl = document.querySelector('p.text-link.text-footer');
+                if (runtimeEl) {
+                    const match = runtimeEl.textContent.match(/(\\d+)\\s*min(?:s)?/);
+                    return match ? parseInt(match[1]) : null;
+                }
+                return null;
+            })(),
+            
+            // Directors
+            directors: Array.from(document.querySelectorAll('span.creatorlist a.contributor'))
+                .map(el => el.textContent.trim()).filter(Boolean),
+            
+            // Actors
+            actors: Array.from(document.querySelectorAll('#tab-cast .text-sluglist a.text-slug.tooltip'))
+                .map(el => el.textContent.trim()).filter(Boolean),
+            
+            // Genres
+            genres: Array.from(document.querySelectorAll('#tab-genres .text-sluglist a.text-slug[href*="/films/genre/"]'))
+                .map(el => el.textContent.trim())
+                .filter(text => text && !text.includes('…') && text !== 'Show All'),
+            
+            // Studios
+            studios: Array.from(document.querySelectorAll('#tab-details .text-sluglist a.text-slug[href*="/studio/"]'))
+                .map(el => el.textContent.trim()).filter(Boolean),
+            
+            // Languages
+            languages: Array.from(document.querySelectorAll('#tab-details .text-sluglist a.text-slug[href*="/films/language/"]'))
+                .map(el => el.textContent.trim()).filter(Boolean),
+            
+            // Countries
+            countries: Array.from(document.querySelectorAll('#tab-details .text-sluglist a.text-slug[href*="/films/country/"]'))
+                .map(el => el.textContent.trim()).filter(Boolean),
+            
+            // MPAA
+            mpaa: (() => {
+                const countries = Array.from(document.querySelectorAll('.release-country'));
+                const usaRatings = countries
+                    .map(country => ({
+                        name: country.querySelector('.name')?.textContent?.trim() || '',
+                        rating: country.querySelector('.release-certification-badge .label')?.textContent?.trim() || ''
+                    }))
+                    .filter(d => d.name === "USA" && d.rating);
+                
+                if (!usaRatings.length) return null;
+                
+                const ratingMap = {'R': 'R', 'PG-13': 'PG-13', 'PG': 'PG', 'G': 'G', 'NC-17': 'NC-17', 'X': 'NC-17', 'M': 'PG', 'GP': 'PG'};
+                for (const r of usaRatings) {
+                    const upper = r.rating.toUpperCase();
+                    if (upper !== 'NR' && upper !== 'NOT RATED' && upper !== 'UNRATED') {
+                        if (r.rating in ratingMap) return ratingMap[r.rating];
+                    }
+                }
+                return null;
+            })()
+        };
+        
+        // Extract ratingCount from JSON-LD or script tags
+        try {
+            const jsonLd = document.querySelector('script[type="application/ld+json"]');
+            if (jsonLd) {
+                const json = JSON.parse(jsonLd.textContent);
+                if (json.aggregateRating && json.aggregateRating.ratingCount) {
+                    data.ratingCount = json.aggregateRating.ratingCount;
+                }
+            }
+        } catch(e) {}
+        
+        // Fallback: extract from page source regex
+        if (!data.ratingCount) {
+            const pageText = document.documentElement.outerHTML;
+            const match = pageText.match(/ratingCount":(\\d+)/);
+            if (match) data.ratingCount = parseInt(match[1]);
+        }
+        
+        return data;
+        """
+        
+        result = driver.execute_script(js_script)
+        
+        # Extract release year from meta title
+        release_year = None
+        if result.get('metaTitle'):
+            meta_title = result['metaTitle']
+            if '(' in meta_title and ')' in meta_title:
+                release_year = meta_title.split('(')[-1].strip(')')
+        
+        # Build complete data structure
+        return {
+            'Title': None,  # Will be set by caller
+            'Year': release_year,
+            'tmdbID': result.get('tmdbId') or None,
+            'MPAA': result.get('mpaa'),
+            'Runtime': result.get('runtime'),
+            'RatingCount': result.get('ratingCount', 0),
+            'Languages': result.get('languages', []),
+            'Countries': result.get('countries', []),
+            'Decade': (int(release_year) // 10) * 10 if release_year and release_year.isdigit() else None,
+            'Directors': result.get('directors', []),
+            'Genres': result.get('genres', []),
+            'Studios': result.get('studios', []),
+            'Actors': result.get('actors', []),
+            'Link': None  # Will be set by caller
+        }
+        
+    except Exception as e:
+        print_to_csv(f"Error extracting all movie data: {str(e)}")
+        return None
+
 def extract_mpaa_rating(driver) -> Optional[str]:
     """Extract the MPAA rating from the movie's page if the country is USA."""
     try:
-        # Wait for the page to be fully loaded
-        wait = WebDriverWait(driver, 10)
-        wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, '.release-country-list')))
-        
         # Use JavaScript to extract all country data
         js_script = """
         const countries = Array.from(document.querySelectorAll('.release-country'));
@@ -1316,10 +1436,18 @@ class LetterboxdScraper:
     def process_movie_data(self, info, film_title=None, film_url=None):
         """Process movie data from the whitelist using URL as the primary identifier."""
         try:
-            if not info or not film_url:
+            if not film_url:
+                return False
+            
+            # Allow empty dict (blank whitelist entry) - it will be updated below
+            if info is None:
                 return False
                 
-            film_title = info.get('Title')  # Only for display purposes
+            # Ensure info is a dict (blank entries are stored as {})
+            if not isinstance(info, dict):
+                info = {}
+                
+            film_title = info.get('Title') or film_title  # Use provided title if info doesn't have it
             release_year = info.get('Year')  # Only for display purposes
             tmdb_id = info.get('tmdbID')  # Only for display purposes
             
@@ -1336,7 +1464,7 @@ class LetterboxdScraper:
                     'Languages', 'Countries', 'Directors', 'Genres', 'Studios', 'Actors'
                 ]
                 missing_fields = [field for field in required_fields if not info.get(field)]
-                if not info or info == {} or missing_fields:
+                if info == {} or missing_fields:
                     try:
                         # Check if browser is still responsive before loading movie page
                         if not self.is_browser_responsive():
@@ -1517,8 +1645,8 @@ class LetterboxdScraper:
                 
                 return True
             
-            # If not whitelisted, process as a new movie
-            self.process_approved_movie(film_title, release_year, tmdb_id, film_url, 'unfiltered')
+            # If not whitelisted, process as a new movie (pass cached data if available)
+            self.process_approved_movie(film_title, release_year, tmdb_id, film_url, 'unfiltered', info)
             return True
                 
         except Exception as e:
@@ -1857,9 +1985,12 @@ class LetterboxdScraper:
                     print_to_csv(f"⚠️ {film_title} was already processed in this session. Skipping.")
                     continue
                 
-                # First check for exact matches in whitelist
-                if whitelist_info:
-                    self.process_movie_data(whitelist_info, film_title, film_url)
+                # First check for exact matches in whitelist (by URL)
+                # Check if whitelisted by URL, even if info is blank (empty dict)
+                if self.processor.is_whitelisted(None, None, film_url):
+                    # Pass whitelist_info (even if it's {} for blank entries)
+                    # process_movie_data will handle blank entries and update them
+                    self.process_movie_data(whitelist_info if whitelist_info is not None else {}, film_title, film_url)
                     # Check again after whitelist processing
                     if self.valid_movies_count >= MAX_MOVIES:
                         print_to_csv(f"✅ {MAX_MOVIES} unique movies successfully scraped. Stopping scraping.")
@@ -1888,23 +2019,27 @@ class LetterboxdScraper:
                         except:
                             pass
                         
-                        # Only wait for the page source to be available, not for any specific element
-                        page_source = self.driver.page_source
-                        # Extract rating count as fast as possible
-                        match = re.search(r'ratingCount":(\d+)', page_source)
-                        rating_count = int(match.group(1)) if match else 0
-
+                        # Extract all movie data in one efficient JavaScript call
+                        movie_data = extract_all_movie_data(self.driver)
+                        
+                        if not movie_data:
+                            print_to_csv(f"❌ Failed to extract data for {film_title}")
+                            self.processor.rejected_data.append([film_title, release_year, None, 'Failed to extract data'])
+                            self.rejected_movies_count += 1
+                            break
+                        
+                        # Fill in title and URL
+                        movie_data['Title'] = film_title
+                        movie_data['Link'] = film_url
+                        
+                        # Use extracted release_year if we have it
+                        if movie_data.get('Year'):
+                            release_year = movie_data['Year']
+                        
+                        # Quick check: rating count
+                        rating_count = movie_data.get('RatingCount', 0)
+                        
                         if rating_count == 0:
-                            # Extract title/year if not already known
-                            # Try to get year from meta tag if not in film_data_list
-                            if not release_year:
-                                try:
-                                    meta_tag = self.driver.find_element(By.CSS_SELECTOR, 'meta[property="og:title"]')
-                                    if meta_tag:
-                                        release_year_content = meta_tag.get_attribute('content')
-                                        release_year = release_year_content.split('(')[-1].strip(')')
-                                except Exception:
-                                    release_year = None
                             print_to_csv(f"📊 {film_title} has no reviews. Adding to zero reviews list.")
                             self.processor.add_to_zero_reviews(film_title, release_year, film_url)
                             self.processor.rejected_data.append([film_title, release_year, None, 'Zero reviews'])
@@ -1916,70 +2051,28 @@ class LetterboxdScraper:
                             self.processor.rejected_data.append([film_title, release_year, None, 'Insufficient ratings (< 1000)'])
                             self.rejected_movies_count += 1
                             break  # Skip to next movie
-                        # If here, rating_count >= 1000, proceed as before
-                        # Reduced wait time for better performance
-                        WebDriverWait(self.driver, 5).until(
-                            EC.presence_of_element_located((By.CSS_SELECTOR, 'meta[property=\"og:title\"]'))
-                        )
-                        meta_tag = self.driver.find_element(By.CSS_SELECTOR, 'meta[property="og:title"]')
-                        release_year = None
-                        if meta_tag:
-                            release_year_content = meta_tag.get_attribute('content')
-                            release_year = release_year_content.split('(')[-1].strip(')')
-                        # Extract TMDB ID from body tag
-                        tmdb_id = None
-                        try:
-                            tmdb_match = re.search(r'data-tmdb-id="(\d+)"', page_source)
-                            if tmdb_match:
-                                tmdb_id = tmdb_match.group(1)
-                        except Exception as e:
-                            print_to_csv(f"Error extracting TMDB ID: {str(e)}")
-                        # Extract runtime
-                        runtime = None
-                        try:
-                            runtime_element = WebDriverWait(self.driver, 10).until(
-                                EC.presence_of_element_located((By.CSS_SELECTOR, 'p.text-link.text-footer'))
-                            )
-                            runtime_text = runtime_element.text
-                            match = re.search(r'(\d+)\s*min(?:s)?', runtime_text)
-                            if match:
-                                runtime = int(match.group(1))
-                                if runtime < MIN_RUNTIME:
-                                    print_to_csv(f"❌ {film_title} was not added due to insufficient runtime: {runtime} minutes.")
-                                    self.processor.rejected_data.append([film_title, release_year, None, 'Insufficient runtime (< 40 minutes)'])
-                                    self.processor.add_to_blacklist(film_title, release_year, 'Insufficient runtime (< 40 minutes)', film_url)
-                                    self.rejected_movies_count += 1
-                                    break  # Skip to next movie
-                        except Exception as e:
-                            runtime = None
-                            print_to_csv(f"Error extracting runtime for {film_title}: {str(e)}")
+                        
+                        # Check runtime
+                        runtime = movie_data.get('Runtime')
                         if runtime is None:
                             runtime_retries = 5
                             print_to_csv(f"⚠️ {film_title} skipped due to missing runtime")
-                            self.rejected_movies_count += 1  # Increase rejected movie count
+                            self.rejected_movies_count += 1
                             if retry < runtime_retries - 1:
                                 print_to_csv(f"Retrying... (Attempt {retry + 1}/{runtime_retries})")
                                 time.sleep(2)
                                 continue
+                            break
+                        
+                        if runtime < MIN_RUNTIME:
+                            print_to_csv(f"❌ {film_title} was not added due to insufficient runtime: {runtime} minutes.")
+                            self.processor.rejected_data.append([film_title, release_year, None, 'Insufficient runtime (< 40 minutes)'])
+                            self.processor.add_to_blacklist(film_title, release_year, 'Insufficient runtime (< 40 minutes)', film_url)
+                            self.rejected_movies_count += 1
+                            break  # Skip to next movie
+                        
                         # If we get here, the movie passed all checks
-                        # Create movie data dictionary
-                        movie_data = {
-                            'Title': film_title,
-                            'Year': release_year,
-                            'tmdbID': tmdb_id,
-                            'MPAA': None,  # We don't need MPAA for processing
-                            'Runtime': runtime,
-                            'RatingCount': rating_count,
-                            'Languages': [],
-                            'Countries': [],
-                            'Decade': (int(release_year) // 10) * 10 if release_year else None,
-                            'Directors': [],
-                            'Genres': [],
-                            'Studios': [],
-                            'Actors': [],
-                            'Link': film_url
-                        }
-                        # Process the movie data
+                        # Process the movie data (with all extracted data cached)
                         self.process_movie_data(movie_data, film_title, film_url)
                         # Check again after processing
                         if self.valid_movies_count >= MAX_MOVIES:
@@ -2010,47 +2103,60 @@ class LetterboxdScraper:
 
 
 
-    def process_approved_movie(self, film_title: str, release_year: str, tmdb_id: str, film_url: str, approval_type: str):
+    def process_approved_movie(self, film_title: str, release_year: str, tmdb_id: str, film_url: str, approval_type: str, cached_data: Dict = None):
         """Process a movie that has been approved."""
         try:
-            # Extract TMDB ID from page source
-            try:
-                page_source = self.driver.page_source
-                tmdb_match = re.search(r'data-tmdb-id="(\d+)"', page_source)
-                if tmdb_match:
-                    tmdb_id = tmdb_match.group(1)
-                else:
+            # Use cached data if available, otherwise extract from page
+            if cached_data:
+                tmdb_id = cached_data.get('tmdbID') or tmdb_id
+                rating_count = cached_data.get('RatingCount', 0)
+                runtime = cached_data.get('Runtime')
+            else:
+                # Fallback: extract from page source (slower)
+                try:
+                    page_source = self.driver.page_source
+                    tmdb_match = re.search(r'data-tmdb-id="(\d+)"', page_source)
+                    if tmdb_match:
+                        tmdb_id = tmdb_match.group(1)
+                    else:
+                        print_to_csv(f"❌ {film_title} was not added due to missing TMDB ID.")
+                        self.processor.rejected_data.append([film_title, release_year, None, 'Missing TMDB ID'])
+                        self.processor.unfiltered_denied.append([film_title, release_year, None, film_url])
+                        self.rejected_movies_count += 1
+                        return
+                except Exception as e:
+                    print_to_csv(f"Error extracting TMDB ID: {str(e)}")
                     print_to_csv(f"❌ {film_title} was not added due to missing TMDB ID.")
                     self.processor.rejected_data.append([film_title, release_year, None, 'Missing TMDB ID'])
                     self.processor.unfiltered_denied.append([film_title, release_year, None, film_url])
-                    self.rejected_movies_count += 1  # Increment rejected counter
+                    self.rejected_movies_count += 1
                     return
-            except Exception as e:
-                print_to_csv(f"Error extracting TMDB ID: {str(e)}")
+
+                # Extract rating count
+                rating_count = 0
+                try:
+                    match = re.search(r'ratingCount":(\d+)', page_source)
+                    if match:
+                        rating_count = int(match.group(1))
+                except Exception as e:
+                    print_to_csv(f"Error extracting rating count: {str(e)}")
+
+                # Extract runtime using Selenium
+                runtime = None
+                try:
+                    runtime_text = self.driver.find_element(By.CSS_SELECTOR, 'p.text-link.text-footer').text
+                    match = re.search(r'(\d+)\s*min(?:s)?', runtime_text)
+                    if match:
+                        runtime = int(match.group(1))
+                except Exception:
+                    runtime = None
+            
+            if not tmdb_id:
                 print_to_csv(f"❌ {film_title} was not added due to missing TMDB ID.")
                 self.processor.rejected_data.append([film_title, release_year, None, 'Missing TMDB ID'])
                 self.processor.unfiltered_denied.append([film_title, release_year, None, film_url])
-                self.rejected_movies_count += 1  # Increment rejected counter
+                self.rejected_movies_count += 1
                 return
-
-            # Extract rating count
-            rating_count = 0
-            try:
-                match = re.search(r'ratingCount":(\d+)', page_source)
-                if match:
-                    rating_count = int(match.group(1))
-            except Exception as e:
-                print_to_csv(f"Error extracting rating count: {str(e)}")
-
-            # Extract runtime using Selenium
-            runtime = None
-            try:
-                runtime_text = self.driver.find_element(By.CSS_SELECTOR, 'p.text-link.text-footer').text
-                match = re.search(r'(\d+)\s*min(?:s)?', runtime_text)
-                if match:
-                    runtime = int(match.group(1))
-            except Exception:
-                runtime = None
 
             # Check if movie has zero reviews
             if rating_count == 0:
@@ -2139,13 +2245,11 @@ class LetterboxdScraper:
                     'tmdbID': tmdb_id,
                     'Link': film_url
                 })
-                # Update statistics for this movie
-                self.update_max_movies_5000_statistics(film_title, release_year, tmdb_id, self.driver, film_url)
-            else:
-                print_to_csv(f"⚠️ {film_title} would be the {len(max_movies_5000_stats['film_data']) + 1}th movie, but we've reached the limit of {MAX_MOVIES_5000}")
-
-            # Add to MPAA stats if applicable
-            mpaa_rating = extract_mpaa_rating(self.driver)
+                # Update statistics for this movie using cached data
+                self.update_max_movies_5000_statistics(film_title, release_year, tmdb_id, cached_data, film_url)
+            
+            # Add to MPAA stats if applicable (use cached data if available)
+            mpaa_rating = cached_data.get('MPAA') if cached_data else extract_mpaa_rating(self.driver)
             if mpaa_rating in MPAA_RATINGS:
                 # Check if we've reached the limit for this rating
                 max_limit = (
@@ -2163,7 +2267,7 @@ class LetterboxdScraper:
                     # Update MPAA statistics
                     self.processor.update_statistics(mpaa_rating, film_url)
 
-            # Add to runtime stats if applicable
+            # Add to runtime stats if applicable (runtime already extracted from cached_data or page)
             if runtime is not None:
                 categories = []
                 if runtime < 91:
@@ -2189,20 +2293,24 @@ class LetterboxdScraper:
                             'tmdbID': tmdb_id,
                             'Link': film_url
                         })
-                        # Update runtime statistics
-                        self.processor.update_runtime_statistics(film_title, release_year, tmdb_id, self.driver, category, film_url)
+                        # Update runtime statistics (use cached data if available)
+                        self.processor.update_runtime_statistics(film_title, release_year, tmdb_id, cached_data if cached_data else self.driver, category, film_url)
 
-            # Add to continent stats if applicable
+            # Add to continent stats if applicable (use cached data)
             try:
-                country_elements = self.driver.find_elements(By.CSS_SELECTOR, '#tab-details .text-sluglist a.text-slug[href*="/films/country/"]')
+                countries = cached_data.get('Countries', []) if cached_data else []
+                if not countries:
+                    # Fallback: extract from page if cached data not available
+                    country_elements = self.driver.find_elements(By.CSS_SELECTOR, '#tab-details .text-sluglist a.text-slug[href*="/films/country/"]')
+                    countries = [country.get_attribute('textContent').strip() for country in country_elements if country.get_attribute('textContent').strip()]
+                
                 added_to_continent = set()  # Track which continents the film has been added to
-                for country in country_elements:
-                    country_name = country.get_attribute('textContent').strip()
+                for country_name in countries:
                     if country_name:
                         # Check if the country belongs to any continent
-                        for continent, countries in CONTINENTS_COUNTRIES.items():
+                        for continent, continent_countries in CONTINENTS_COUNTRIES.items():
                             # Check if normalized country matches any country in the list (case-insensitive)
-                            if any(country_name.lower() == c.lower() for c in countries):
+                            if any(country_name.lower() == c.lower() for c in continent_countries):
                                 # If continent not already added, add it to stats
                                 if continent not in added_to_continent:
                                     # Check if we've reached the limit for this continent
@@ -2231,8 +2339,8 @@ class LetterboxdScraper:
             self.processor.rejected_data.append([film_title, release_year, None, f'Error processing: {str(e)}'])
             return False
 
-    def update_max_movies_5000_statistics(self, film_title: str, release_year: str, tmdb_id: str, driver, film_url: str = None):
-        """Update statistics for the given movie for MAX_MOVIES_5000."""
+    def update_max_movies_5000_statistics(self, film_title: str, release_year: str, tmdb_id: str, cached_data: Dict = None, film_url: str = None):
+        """Update statistics for the given movie for MAX_MOVIES_5000 using cached data."""
         if not film_url:
             print_to_csv("WARNING: No film URL provided for statistics update")
             return
@@ -2244,91 +2352,56 @@ class LetterboxdScraper:
         if not movie_data:
             return
 
-        # Directors
-        try:
-            director_elements = driver.find_elements(By.CSS_SELECTOR, 'span.creatorlist a.contributor')
-            for director in director_elements:
-                director_name = director.text.strip()
-                if director_name:
-                    max_movies_5000_stats['director_counts'][director_name] += 1
-        except Exception:
-            pass
+        # Use cached data if available (much faster than Selenium queries)
+        if cached_data:
+            # Directors
+            for director in cached_data.get('Directors', []):
+                if director:
+                    max_movies_5000_stats['director_counts'][director] += 1
 
-        # Actors
-        try:
-            actor_elements = driver.find_elements(By.CSS_SELECTOR, '#tab-cast .text-sluglist a.text-slug.tooltip')
-            for actor in actor_elements:
-                actor_name = actor.text.strip()
-                if actor_name:
-                    max_movies_5000_stats['actor_counts'][actor_name] += 1
-        except Exception:
-            pass
+            # Actors
+            for actor in cached_data.get('Actors', []):
+                if actor:
+                    max_movies_5000_stats['actor_counts'][actor] += 1
 
-        # Decade
-        try:
-            meta_tag = driver.find_element(By.CSS_SELECTOR, 'meta[property="og:title"]')
-            content = meta_tag.get_attribute('content')
-            if content and '(' in content and ')' in content:
-                year = int(content.split('(')[-1].split(')')[0])
-                decade = (year // 10) * 10
+            # Decade
+            decade = cached_data.get('Decade')
+            if decade:
                 max_movies_5000_stats['decade_counts'][decade] += 1
-        except Exception:
-            pass
 
-        # Genres - Only get main genres, not microgenres
-        try:
-            genre_elements = driver.find_elements(By.CSS_SELECTOR, '#tab-genres .text-sluglist a.text-slug[href*="/films/genre/"]')
-            genres = []
-            for genre in genre_elements:
-                genre_name = genre.get_attribute('textContent').strip()
-                if genre_name and not any(char in genre_name for char in ['…', 'Show All']):
-                    genres.append(genre_name)
-                    max_movies_5000_stats['genre_counts'][genre_name] += 1
+            # Genres
+            genres = cached_data.get('Genres', [])
+            for genre in genres:
+                if genre:
+                    max_movies_5000_stats['genre_counts'][genre] += 1
             movie_data['Genres'] = genres
-        except Exception:
-            pass
 
-        # Studios
-        try:
-            studio_elements = driver.find_elements(By.CSS_SELECTOR, '#tab-details .text-sluglist a.text-slug[href*="/studio/"]')
-            studios = []
-            for studio in studio_elements:
-                studio_name = studio.get_attribute('textContent').strip()
-                if studio_name:
-                    studios.append(studio_name)
-                    max_movies_5000_stats['studio_counts'][studio_name] += 1
+            # Studios
+            studios = cached_data.get('Studios', [])
+            for studio in studios:
+                if studio:
+                    max_movies_5000_stats['studio_counts'][studio] += 1
             movie_data['Studios'] = studios
-        except Exception:
-            pass
 
-        # Languages
-        try:
-            language_elements = driver.find_elements(By.CSS_SELECTOR, '#tab-details .text-sluglist a.text-slug[href*="/films/language/"]')
-            languages = []
-            for language in language_elements:
-                language_name = language.get_attribute('textContent').strip()
-                if language_name:
-                    languages.append(language_name)
-                    max_movies_5000_stats['language_counts'][language_name] += 1
+            # Languages
+            languages = cached_data.get('Languages', [])
+            for language in languages:
+                if language:
+                    max_movies_5000_stats['language_counts'][language] += 1
             movie_data['Languages'] = languages
-        except Exception:
-            pass
 
-        # Countries
-        try:
-            country_elements = driver.find_elements(By.CSS_SELECTOR, '#tab-details .text-sluglist a.text-slug[href*="/films/country/"]')
-            countries = []
-            for country in country_elements:
-                country_name = country.get_attribute('textContent').strip()
-                if country_name:
-                    countries.append(country_name)
-                    max_movies_5000_stats['country_counts'][country_name] += 1
+            # Countries
+            countries = cached_data.get('Countries', [])
+            for country in countries:
+                if country:
+                    max_movies_5000_stats['country_counts'][country] += 1
                     # Debug: Check if this looks like a genre instead of a country
-                    if country_name in ['Animation', 'Comedy', 'Family', 'Drama', 'Action', 'Horror', 'Romance', 'Thriller', 'Crime', 'Adventure', 'Fantasy', 'Science Fiction', 'Mystery', 'War', 'Western', 'Music', 'History']:
-                        print_to_csv(f"WARNING: Found genre '{country_name}' in country extraction for {movie_data.get('Title', 'Unknown')} - URL: {country.get_attribute('href')}")
+                    if country in ['Animation', 'Comedy', 'Family', 'Drama', 'Action', 'Horror', 'Romance', 'Thriller', 'Crime', 'Adventure', 'Fantasy', 'Science Fiction', 'Mystery', 'War', 'Western', 'Music', 'History']:
+                        print_to_csv(f"WARNING: Found genre '{country}' in country extraction for {movie_data.get('Title', 'Unknown')}")
             movie_data['Countries'] = countries
-        except Exception:
-            pass
+        else:
+            # Fallback to old method if cached_data not available (shouldn't happen)
+            print_to_csv(f"WARNING: No cached data provided for {film_title}, statistics may be incomplete")
 
     def save_max_movies_5000_results(self):
         """Save results for MAX_MOVIES_5000."""
@@ -2435,6 +2508,12 @@ class LetterboxdScraper:
                 # Limit to top results
                 top_data = continent_data[:int(max_limit)]  # Ensure it does not exceed the max
                 if top_data:
+                    # Limit the film_data to only the top results
+                    continent_stats[continent]['film_data'] = top_data
+                    
+                    # Recalculate statistics from the LIMITED data BEFORE writing
+                    self.recalculate_continent_statistics(continent)
+                    
                     # Save movie data in chunks
                     num_chunks = (len(top_data) + CHUNK_SIZE - 1) // CHUNK_SIZE
                     for i in range(num_chunks):
@@ -2476,12 +2555,6 @@ class LetterboxdScraper:
                                     file.write(f"{item}: {count}\n")
                                 file.write("\n")
                         file.write("<strong>If you notice any movies you believe should/should not be included just let me know!</strong>")
-
-                    # Ensure we only save up to MAX_MOVIES_CONTINENT in the film data
-                    continent_stats[continent]['film_data'] = continent_stats[continent]['film_data'][:MAX_MOVIES_CONTINENT]
-                    
-                    # Recalculate statistics from the limited data
-                    self.recalculate_continent_statistics(continent)
 
     def recalculate_continent_statistics(self, continent):
         """Recalculate statistics for a continent based on the limited film data."""

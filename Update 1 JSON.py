@@ -8,7 +8,7 @@ from urllib3.util.retry import Retry
 import threading
 from tqdm import tqdm
 import time
-from github import Github
+from github import Github, Auth
 import os
 from datetime import datetime
 import platform
@@ -21,7 +21,7 @@ def get_os_specific_paths():
     
     if system == "Windows":
         # Windows paths
-        base_dir = r'C:\Users\bigba\aa Personal Projects\Letterboxd List Scraping'
+        base_dir = r'C:\Users\bigba\aa Personal Projects\Letterboxd-List-Scraping'
         jsons_dir = os.path.join(base_dir, 'JSONs')
     elif system == "Darwin":  # macOS
         # macOS paths
@@ -258,7 +258,7 @@ def update_github_file(filename, file_content):
         credentials = load_credentials()
         
         # Initialize Github with your access token
-        g = Github(credentials['GITHUB_API_KEY'])
+        g = Github(auth=Auth.Token(credentials['GITHUB_API_KEY']))
         
         # Get the repository
         repo = g.get_repo("bigbadraj/Letterboxd-List-JSONs")
@@ -319,7 +319,9 @@ def process_single_list(base_url, output_json, progress_tracker, max_films=None,
         bar_format="{desc}: {percentage:3.0f}% |{bar}| {n_fmt}/{total_fmt} pages"
     ) as pbar:
         while True:
-            page_url = f"{base_url}page/{current_page}/" if current_page > 1 else base_url
+            # Ensure base_url ends with / for proper URL construction
+            base_url_normalized = base_url.rstrip('/')
+            page_url = f"{base_url_normalized}/page/{current_page}/" if current_page > 1 else base_url_normalized
             print(f"\n{f' Page {current_page}/{total_pages} ':=^100}")
             has_next, page_data = process_page(session, page_url, max_films, progress_tracker)
             

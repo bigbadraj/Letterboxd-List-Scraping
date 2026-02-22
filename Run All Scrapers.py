@@ -52,12 +52,17 @@ def run_script(script_name, description, *args):
     start_time = time.time()
     
     try:
+        # Get the directory where this script is located
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        # Construct the full path to the script
+        script_path = os.path.join(script_dir, script_name)
+        
         # Set environment variable for UTF-8 encoding
         env = dict(os.environ, PYTHONIOENCODING='utf-8')
         
         # Add encoding parameters to handle special characters
         process = subprocess.Popen(
-            [PYTHON_CMD, '-u', script_name] + list(args),
+            [PYTHON_CMD, '-u', script_path] + list(args),
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             universal_newlines=True,
@@ -96,9 +101,7 @@ def run_script(script_name, description, *args):
     except Exception as e:
         print(f"\n[-] Error running {description}: {str(e)}")
         return False
-
-
-
+        
 def main():
     start_time = time.time()
     current_date = datetime.now().strftime("%B %d, %Y")
