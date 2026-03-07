@@ -82,21 +82,26 @@ def is_network_error(error: Exception) -> bool:
 
 # Configure locale and constants
 locale.setlocale(locale.LC_ALL, 'en_US.UTF-8')
-MAX_MOVIES = 250 # Currently using 7000
+MAX_MOVIES = 7000 # Currently using 7000
 MAX_MOVIES_5000 = 5000
 MAX_MOVIES_MPAA = 250
 MAX_MOVIES_RUNTIME = 250
 MAX_MOVIES_CONTINENT = 250
-MAX_MOVIES_RUNTIME_OFFICIAL = 575  # Limit for 100 min or less / 150 min or more (no stats tracked)
+MAX_MOVIES_RUNTIME_OFFICIAL = 600  # Limit for 100 min or less / 150 min or more (no stats tracked)
 
 # Configure settings
 MIN_RATING_COUNT = 1000
+MIN_RATING_COUNT_OFFICIAL = 5000  # Official runtime lists (100 min or less, 150 min or more) only
 MIN_RUNTIME = 40
 MAX_RETRIES = 50
 RETRY_DELAY = 15
 BASE_RETRY_DELAY = 5  # Base delay for exponential backoff
 MAX_RETRY_DELAY = 300  # Maximum delay (5 minutes)
 CHUNK_SIZE = 1900
+
+# Human-like delays to reduce bot detection (set to (0, 0) to disable for speed)
+HUMAN_DELAY_BETWEEN_FILMS = (1.0, 2.5)  # seconds between visiting each film page
+HUMAN_DELAY_BETWEEN_PAGES = (1.5, 3.0)  # seconds between listing pages
 
 # Configure specific maxes
 MAX_180_POPULAR = 75
@@ -118,6 +123,7 @@ MAX_MOVIES_SOUTH_AMERICA_RATING = 250
 # File paths
 BLACKLIST_PATH = os.path.join(LIST_DIR, 'blacklist.xlsx')
 WHITELIST_PATH = os.path.join(LIST_DIR, 'whitelist.xlsx')
+OFFICIAL_WHITELIST_PATH = os.path.join(LIST_DIR, 'Official Whitelist.xlsx')
 ZERO_REVIEWS_PATH = os.path.join(LIST_DIR, 'Zero_Reviews.xlsx')  # Add new path
 
 # Load credentials
@@ -464,6 +470,9 @@ class MovieProcessor:
                     categories.append('150_Minutes_or_More')
         
             for category in categories:
+                # Official runtime lists require 5000+ ratings
+                if category in OFFICIAL_RUNTIME_CATEGORIES and info.get('RatingCount', 0) < MIN_RATING_COUNT_OFFICIAL:
+                    continue
                 if add_to_runtime_stats(category, info.get('Title'), info.get('Year'), info.get('tmdbID'), film_url):
                     if category not in OFFICIAL_RUNTIME_CATEGORIES:
                         self.update_runtime_statistics(info.get('Title'), info.get('Year'), info.get('tmdbID'), None, category)
@@ -1016,7 +1025,8 @@ class MovieProcessor:
 
 def setup_webdriver() -> webdriver.Firefox:
     options = Options()
-    options.headless = True
+    # Run headed (visible) to avoid detection - headless is easily flagged by anti-bot systems
+    options.headless = False
     if MY_FIREFOX_PROFILE_PATH and os.path.isdir(MY_FIREFOX_PROFILE_PATH):
         options.add_argument("-profile")
         options.add_argument(MY_FIREFOX_PROFILE_PATH)
@@ -1343,6 +1353,8 @@ def add_to_mpaa_stats(rating: str, film_title: str, release_year: str, tmdb_id: 
 class LetterboxdScraper:
     def __init__(self, scrape_type="popular"):
         self.driver = setup_webdriver()
+        self.driver.maximize_window()  # Full-screen looks more like real user, less likely to be flagged
+        time.sleep(1)  # Let window settle before navigating
         self.processor = MovieProcessor()
         self.processor.scrape_type = scrape_type
         self.scrape_type = scrape_type
@@ -1747,6 +1759,9 @@ class LetterboxdScraper:
                     
                     # Update state tracking for successful page load
                     self.update_state_tracking(self.page_number, url)
+                    # Human-like delay between listing pages to reduce detection
+                    if HUMAN_DELAY_BETWEEN_PAGES[1] > 0:
+                        time.sleep(random.uniform(*HUMAN_DELAY_BETWEEN_PAGES))
                     break
                 except Exception as e:
                     # Check if this is a browser crash
@@ -2038,6 +2053,10 @@ class LetterboxdScraper:
                                 print_to_csv("❌ Browser recovery failed. Skipping this movie.")
                                 break
                         
+                        # Human-like delay before visiting each film page to reduce detection
+                        if HUMAN_DELAY_BETWEEN_FILMS[1] > 0:
+                            time.sleep(random.uniform(*HUMAN_DELAY_BETWEEN_FILMS))
+                        
                         self.driver.get(film_url)
                         
                         # Check if we got redirected to an error page
@@ -2315,6 +2334,9 @@ class LetterboxdScraper:
                         categories.append('150_Minutes_or_More')
 
                 for category in categories:
+                    # Official runtime lists use a higher rating threshold (5000)
+                    if category in OFFICIAL_RUNTIME_CATEGORIES and rating_count < MIN_RATING_COUNT_OFFICIAL:
+                        continue
                     # Check if we've reached the limit for this category
                     max_limit = (
                         MAX_MOVIES_RUNTIME_OFFICIAL if category in OFFICIAL_RUNTIME_CATEGORIES else
@@ -2477,7 +2499,7 @@ class LetterboxdScraper:
             
             # Write eligibility criteria
             file.write("<strong>Film eligibility criteria:</strong>\n")
-            file.write("-- Must have a minimum of 1,000 reviews on Letterboxd.\n")
+            file.write("-- Must have a minimum of 1,000 ratings on Letterboxd.\n")
             file.write("-- Cannot be a short film (minimum 40 minutes).\n")
             file.write("-- Cannot be a television miniseries.\n")
             file.write("-- Cannot be a compilation of short serials.\n")
@@ -2571,7 +2593,7 @@ class LetterboxdScraper:
                         file.write(f"<strong>Last updated: {formatted_date}</strong>\n\n")
                         file.write("<a href=https://letterboxd.com/bigbadraj/list/the-official-list-index/> Check out more of the lists I update regularly! </a>\n\n")
                         file.write("<strong>Film eligibility criteria:</strong>\n")
-                        file.write("-- Must have a minimum of 1,000 reviews on Letterboxd.\n")
+                        file.write("-- Must have a minimum of 1,000 ratings on Letterboxd.\n")
                         file.write("-- Cannot be a short film (minimum 40 minutes).\n")
                         file.write("-- Cannot be a television miniseries.\n")
                         file.write("-- Cannot be a compilation of short serials.\n")
@@ -2810,7 +2832,7 @@ class LetterboxdScraper:
                 file.write(f"<strong>Last updated: {formatted_date}</strong>\n\n")
                 file.write("<a href=https://letterboxd.com/bigbadraj/list/the-official-list-index/> Check out more of the lists I update regularly! </a>\n\n")
                 file.write("<strong>Film eligibility criteria:</strong>\n")
-                file.write("-- Must have a minimum of 1,000 reviews on Letterboxd.\n")
+                file.write("-- Must have a minimum of 1,000 ratings on Letterboxd.\n")
                 file.write("-- Cannot be a short film (minimum 40 minutes).\n")
                 file.write("-- Cannot be a television miniseries.\n")
                 file.write("-- Cannot be a compilation of short serials.\n")
@@ -2926,11 +2948,23 @@ class LetterboxdScraper:
 
                 # Save movie data in chunks
                 num_chunks = (len(top_data) + CHUNK_SIZE - 1) // CHUNK_SIZE
+                official_whitelist_links = set()
+                if category in OFFICIAL_RUNTIME_CATEGORIES and os.path.exists(OFFICIAL_WHITELIST_PATH):
+                    try:
+                        official_df = pd.read_excel(OFFICIAL_WHITELIST_PATH, header=0)
+                        if 'Link' in official_df.columns:
+                            official_whitelist_links = set(official_df['Link'].dropna().astype(str).str.strip())
+                    except Exception:
+                        pass
                 for i in range(num_chunks):
                     start_idx = i * CHUNK_SIZE
                     end_idx = min((i + 1) * CHUNK_SIZE, len(top_data))
                     chunk_df = pd.DataFrame(top_data[start_idx:end_idx])
                     chunk_df = chunk_df[['Title', 'Year', 'tmdbID', 'Link']]
+                    if category in OFFICIAL_RUNTIME_CATEGORIES:
+                        chunk_df['Unapproved?'] = chunk_df['Link'].apply(
+                            lambda link: 'Yes' if (pd.isna(link) or str(link).strip() not in official_whitelist_links) else ''
+                        )
                     output_path = os.path.join(output_dir, f'{category}_{"pop" if self.scrape_type == "popular" else "top"}_movies.csv')
                     chunk_df.to_csv(output_path, index=False, encoding='utf-8')
 
@@ -2956,7 +2990,7 @@ class LetterboxdScraper:
                         file.write(f"<strong>Last updated: {formatted_date}</strong>\n\n")
                         file.write("<a href=https://letterboxd.com/bigbadraj/list/the-official-list-index/> Check out more of the lists I update regularly! </a>\n\n")
                         file.write("<strong>Film eligibility criteria:</strong>\n")
-                        file.write("-- Must have a minimum of 1,000 reviews on Letterboxd.\n")
+                        file.write("-- Must have a minimum of 1,000 ratings on Letterboxd.\n")
                         file.write("-- Cannot be a short film (minimum 40 minutes).\n")
                         file.write("-- Cannot be a television miniseries.\n")
                         file.write("-- Cannot be a compilation of short serials.\n")

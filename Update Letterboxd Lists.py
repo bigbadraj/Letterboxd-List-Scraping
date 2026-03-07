@@ -182,11 +182,11 @@ def update_letterboxd_lists():
     lists_with_descriptions = {
         "film_titles": {
             "url": "https://letterboxd.com/bigbadraj/list/top-250-highest-rated-things-on-letterboxd/edit/",
-            "description": "Minimum 1,000 reviews. Otherwise, anything on Letterboxd is eligible.\n\nLast Updated: {date}\n\n<a href=https://letterboxd.com/bigbadraj/list/the-official-list-index/> Check out more of the lists I update regularly! </a>"
+            "description": "Minimum 1,000 ratings. Otherwise, anything on Letterboxd is eligible.\n\nLast Updated: {date}\n\n<a href=https://letterboxd.com/bigbadraj/list/the-official-list-index/> Check out more of the lists I update regularly! </a>"
         },
         "stand_up_comedy": {
             "url": "https://letterboxd.com/bigbadraj/list/top-100-highest-rated-stand-up-comedy-specials/edit/",
-            "description": "Minimum 1,000 reviews.\n\nLast Updated: {date}\n\n<a href=https://letterboxd.com/bigbadraj/list/the-official-list-index/> Check out more of the lists I update regularly! </a>\n\n<a href=https://letterboxd.com/asset/list/stand-up-comedy-a-comprehensive-list/> Based off of this list of Stand-Up Comedy Specials </a>"
+            "description": "Minimum 1,000 ratings.\n\nLast Updated: {date}\n\n<a href=https://letterboxd.com/bigbadraj/list/the-official-list-index/> Check out more of the lists I update regularly! </a>\n\n<a href=https://letterboxd.com/asset/list/stand-up-comedy-a-comprehensive-list/> Based off of this list of Stand-Up Comedy Specials </a>"
         },
         "box_office_real": {
             "url": "https://letterboxd.com/bigbadraj/list/top-250-highest-grossing-movies-of-all-time-1/edit/",
@@ -222,21 +222,29 @@ def update_letterboxd_lists():
     service = Service()
     driver = webdriver.Firefox(service=service, options=options)
 
+    # Maximize Firefox window to full screen first
+    driver.maximize_window()
+    time.sleep(1)
+
     try:
         log_and_print("✅ Navigating to Letterboxd homepage.")
         driver.get("https://letterboxd.com/")
         time.sleep(2)
 
-        log_and_print("✅ Clicking on the 'Sign in' button.")
-        sign_in_button = driver.find_element(By.CSS_SELECTOR, ".sign-in-menu a")
-        sign_in_button.click()
-        time.sleep(1)
+        # Only sign in if the sign-in menu is present; otherwise assume already signed in
+        sign_in_elements = driver.find_elements(By.CSS_SELECTOR, ".sign-in-menu a")
+        if sign_in_elements:
+            log_and_print("✅ Clicking on the 'Sign in' button.")
+            sign_in_elements[0].click()
+            time.sleep(1)
 
-        log_and_print("✅ Entering username and password.")
-        driver.find_element(By.NAME, "username").send_keys(username)
-        driver.find_element(By.NAME, "password").send_keys(password)
-        driver.find_element(By.NAME, "password").send_keys(Keys.RETURN)
-        time.sleep(2)
+            log_and_print("✅ Entering username and password.")
+            driver.find_element(By.NAME, "username").send_keys(username)
+            driver.find_element(By.NAME, "password").send_keys(password)
+            driver.find_element(By.NAME, "password").send_keys(Keys.RETURN)
+            time.sleep(2)
+        else:
+            log_and_print("✅ Sign-in menu not present — already signed in, continuing.")
 
         # Loop through each list to update
         results = []

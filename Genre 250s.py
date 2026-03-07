@@ -1682,7 +1682,7 @@ class LetterboxdScraper:
             
             # Write eligibility criteria
             file.write("<strong>Film eligibility criteria:</strong>\n")
-            file.write("-- Must have a minimum of 1,000 reviews on Letterboxd.\n")
+            file.write("-- Must have a minimum of 1,000 ratings on Letterboxd.\n")
             file.write("-- Cannot be a short film (minimum 40 minutes).\n")
             file.write("-- Cannot be a television miniseries.\n")
             file.write("-- Cannot be a compilation of short serials.\n")
