@@ -69,6 +69,9 @@ paths = get_os_specific_paths()
 BASE_DIR = paths['output_dir']
 LIST_DIR = paths['base_dir']
 
+# Firefox profile where you're signed into Letterboxd (about:profiles → Open Folder). Close Firefox before running.
+MY_FIREFOX_PROFILE_PATH = r'C:\Users\bigba\AppData\Roaming\Mozilla\Firefox\Profiles\A1zmb2EC.Profile 1'
+
 # Define a custom print function
 def print_to_csv(message: str):
     """Prints a message to the terminal and appends it to All_Outputs.csv."""
@@ -632,10 +635,10 @@ class MovieProcessor:
 def setup_webdriver() -> webdriver.Firefox:
     options = Options()
     options.headless = True
-    options.set_preference("permissions.default.image", 2)  # Disable images
+    if MY_FIREFOX_PROFILE_PATH and os.path.isdir(MY_FIREFOX_PROFILE_PATH):
+        options.add_argument("-profile")
+        options.add_argument(MY_FIREFOX_PROFILE_PATH)
     options.set_preference("dom.ipc.plugins.enabled.libflashplayer.so", "false")
-    options.set_preference("browser.display.use_document_fonts", 0)
-    options.set_preference("browser.display.document_color_use", 2)
     
     # Add these preferences to prevent random downloads
     options.set_preference("browser.download.folderList", 2)  # Use custom download location

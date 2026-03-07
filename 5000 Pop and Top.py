@@ -50,6 +50,9 @@ output_dir = paths['output_dir']
 BASE_DIR = paths['output_dir']
 LIST_DIR = paths['base_dir']
 
+# Firefox profile where you're signed into Letterboxd (about:profiles → Open Folder). Close Firefox before running.
+MY_FIREFOX_PROFILE_PATH = r'C:\Users\bigba\AppData\Roaming\Mozilla\Firefox\Profiles\A1zmb2EC.Profile 1'
+
 # Define a custom print function
 def print_to_csv(message: str):
     """Prints a message to the terminal and appends it to All_Outputs.csv."""
@@ -79,11 +82,12 @@ def is_network_error(error: Exception) -> bool:
 
 # Configure locale and constants
 locale.setlocale(locale.LC_ALL, 'en_US.UTF-8')
-MAX_MOVIES = 7000 # Currently using 7000
+MAX_MOVIES = 250 # Currently using 7000
 MAX_MOVIES_5000 = 5000
 MAX_MOVIES_MPAA = 250
 MAX_MOVIES_RUNTIME = 250
 MAX_MOVIES_CONTINENT = 250
+MAX_MOVIES_RUNTIME_OFFICIAL = 575  # Limit for 100 min or less / 150 min or more (no stats tracked)
 
 # Configure settings
 MIN_RATING_COUNT = 1000
@@ -141,8 +145,13 @@ RUNTIME_CATEGORIES = {
     '90_Minutes_or_Less': [],
     '2_Hours_or_Less': [],
     '3_Hours_or_Greater': [],
-    '4_Hours_or_Greater': []
+    '4_Hours_or_Greater': [],
+    '100_Minutes_or_Less': [],
+    '150_Minutes_or_More': []
 }
+
+# Official runtime lists: use MAX_MOVIES_RUNTIME_OFFICIAL, no stats tracked
+OFFICIAL_RUNTIME_CATEGORIES = {'100_Minutes_or_Less', '150_Minutes_or_More'}
 
 runtime_stats = {
     '90_Minutes_or_Less': {'film_data': [], 'director_counts': defaultdict(int), 'actor_counts': defaultdict(int), 
@@ -160,7 +169,15 @@ runtime_stats = {
     '4_Hours_or_Greater': {'film_data': [], 'director_counts': defaultdict(int), 'actor_counts': defaultdict(int), 
                          'decade_counts': defaultdict(int), 'genre_counts': defaultdict(int), 
                          'studio_counts': defaultdict(int), 'language_counts': defaultdict(int), 
-                         'country_counts': defaultdict(int)}  # Each entry will have Title, Year, tmdbID, and URL fields
+                         'country_counts': defaultdict(int)},  # Each entry will have Title, Year, tmdbID, and URL fields
+    '100_Minutes_or_Less': {'film_data': [], 'director_counts': defaultdict(int), 'actor_counts': defaultdict(int), 
+                         'decade_counts': defaultdict(int), 'genre_counts': defaultdict(int), 
+                         'studio_counts': defaultdict(int), 'language_counts': defaultdict(int), 
+                         'country_counts': defaultdict(int)},
+    '150_Minutes_or_More': {'film_data': [], 'director_counts': defaultdict(int), 'actor_counts': defaultdict(int), 
+                         'decade_counts': defaultdict(int), 'genre_counts': defaultdict(int), 
+                         'studio_counts': defaultdict(int), 'language_counts': defaultdict(int), 
+                         'country_counts': defaultdict(int)}
 }
 
 # Define continents and their associated countries in a case-insensitive manner
@@ -440,10 +457,16 @@ class MovieProcessor:
                 categories.append('3_Hours_or_Greater')
             if runtime > 239:
                 categories.append('4_Hours_or_Greater')
+            if getattr(self, 'scrape_type', 'popular') == 'rating':
+                if runtime <= 100:
+                    categories.append('100_Minutes_or_Less')
+                if runtime >= 150:
+                    categories.append('150_Minutes_or_More')
         
             for category in categories:
                 if add_to_runtime_stats(category, info.get('Title'), info.get('Year'), info.get('tmdbID'), film_url):
-                    self.update_runtime_statistics(info.get('Title'), info.get('Year'), info.get('tmdbID'), None, category)
+                    if category not in OFFICIAL_RUNTIME_CATEGORIES:
+                        self.update_runtime_statistics(info.get('Title'), info.get('Year'), info.get('tmdbID'), None, category)
 
         # Process MAX_MOVIES_5000 using centralized function
         if add_to_max_movies_5000(info.get('Title'), info.get('Year'), info.get('tmdbID'), film_url):
@@ -656,11 +679,17 @@ class MovieProcessor:
             categories.append('3_Hours_or_Greater')
         if runtime > 239:
             categories.append('4_Hours_or_Greater')
+        if self.scrape_type == 'rating':
+            if runtime <= 100:
+                categories.append('100_Minutes_or_Less')
+            if runtime >= 150:
+                categories.append('150_Minutes_or_More')
                     
         # Add to each applicable category
         for category in categories:
             if add_to_runtime_stats(category, film_title, release_year, tmdb_id, film_url):
-                self.update_runtime_statistics(film_title, release_year, tmdb_id, driver, category, film_url)
+                if category not in OFFICIAL_RUNTIME_CATEGORIES:
+                    self.update_runtime_statistics(film_title, release_year, tmdb_id, driver, category, film_url)
 
     def update_runtime_statistics(self, film_title: str, release_year: str, tmdb_id: str, driver_or_data, category: str, film_url: str = None):
         """Update statistics for the given runtime category."""
@@ -988,10 +1017,10 @@ class MovieProcessor:
 def setup_webdriver() -> webdriver.Firefox:
     options = Options()
     options.headless = True
-    options.set_preference("permissions.default.image", 2)  # Disable images
+    if MY_FIREFOX_PROFILE_PATH and os.path.isdir(MY_FIREFOX_PROFILE_PATH):
+        options.add_argument("-profile")
+        options.add_argument(MY_FIREFOX_PROFILE_PATH)
     options.set_preference("dom.ipc.plugins.enabled.libflashplayer.so", "false")
-    options.set_preference("browser.display.use_document_fonts", 0)
-    options.set_preference("browser.display.document_color_use", 2)
     
     # Add these preferences to prevent random downloads
     options.set_preference("browser.download.folderList", 2)  # Use custom download location
@@ -1315,6 +1344,7 @@ class LetterboxdScraper:
     def __init__(self, scrape_type="popular"):
         self.driver = setup_webdriver()
         self.processor = MovieProcessor()
+        self.processor.scrape_type = scrape_type
         self.scrape_type = scrape_type
         if scrape_type == "popular":
             self.base_url = 'https://letterboxd.com/films/by/popular/'
@@ -2278,10 +2308,16 @@ class LetterboxdScraper:
                     categories.append('3_Hours_or_Greater')
                 if runtime > 239:
                     categories.append('4_Hours_or_Greater')
+                if self.scrape_type == 'rating':
+                    if runtime <= 100:
+                        categories.append('100_Minutes_or_Less')
+                    if runtime >= 150:
+                        categories.append('150_Minutes_or_More')
 
                 for category in categories:
                     # Check if we've reached the limit for this category
                     max_limit = (
+                        MAX_MOVIES_RUNTIME_OFFICIAL if category in OFFICIAL_RUNTIME_CATEGORIES else
                         self.max_180 if category == '3_Hours_or_Greater' else
                         self.max_240 if category == '4_Hours_or_Greater' else
                         MAX_MOVIES_RUNTIME
@@ -2293,8 +2329,9 @@ class LetterboxdScraper:
                             'tmdbID': tmdb_id,
                             'Link': film_url
                         })
-                        # Update runtime statistics (use cached data if available)
-                        self.processor.update_runtime_statistics(film_title, release_year, tmdb_id, cached_data if cached_data else self.driver, category, film_url)
+                        # Update runtime statistics only for non-official categories
+                        if category not in OFFICIAL_RUNTIME_CATEGORIES:
+                            self.processor.update_runtime_statistics(film_title, release_year, tmdb_id, cached_data if cached_data else self.driver, category, film_url)
 
             # Add to continent stats if applicable (use cached data)
             try:
@@ -2868,10 +2905,14 @@ class LetterboxdScraper:
     def save_runtime_results(self):
         """Save results for each runtime category."""
         for category in RUNTIME_CATEGORIES.keys():
+            # Official runtime lists (100 min or less, 150 min or more) are rating-only
+            if category in OFFICIAL_RUNTIME_CATEGORIES and self.scrape_type != 'rating':
+                continue
             category_data = runtime_stats[category]['film_data']
             if category_data:
                 # Determine the max limit based on the category
                 max_limit = (
+                    MAX_MOVIES_RUNTIME_OFFICIAL if category in OFFICIAL_RUNTIME_CATEGORIES else
                     self.max_180 if category == '3_Hours_or_Greater' else
                     self.max_240 if category == '4_Hours_or_Greater' else
                     MAX_MOVIES_RUNTIME
@@ -2879,8 +2920,9 @@ class LetterboxdScraper:
                 # Limit to top results
                 top_data = category_data[:int(max_limit)]  # Ensure it does not exceed the max
                 
-                # Recalculate statistics from the limited data
-                self.recalculate_runtime_statistics(category, top_data)
+                # Recalculate statistics only for categories that track stats
+                if category not in OFFICIAL_RUNTIME_CATEGORIES:
+                    self.recalculate_runtime_statistics(category, top_data)
 
                 # Save movie data in chunks
                 num_chunks = (len(top_data) + CHUNK_SIZE - 1) // CHUNK_SIZE
@@ -2892,57 +2934,59 @@ class LetterboxdScraper:
                     output_path = os.path.join(output_dir, f'{category}_{"pop" if self.scrape_type == "popular" else "top"}_movies.csv')
                     chunk_df.to_csv(output_path, index=False, encoding='utf-8')
 
-                current_date = datetime.now()
-                day = current_date.day
-                if 10 <= day % 100 <= 20:
-                    suffix = 'th'
-                else:
-                    suffix = {1: 'st', 2: 'nd', 3: 'rd'}.get(day % 10, 'th')
-                formatted_date = current_date.strftime('%B ') + str(day) + suffix + f", {current_date.year}"
-
-                # Save statistics for this category
-                stats_path = os.path.join(output_dir, f'stats_{category}_{"pop" if self.scrape_type == "popular" else "top"}_movies.txt')
-                with open(stats_path, mode='w', encoding='utf-8') as file:
-                    # Format the category name for display
-                    display_category = category.replace('_', ' ').replace('Minutes', 'minutes')
-                    if self.scrape_type == "popular":
-                        file.write(f"<strong>The {len(top_data)} Most Popular {display_category} Movies On Letterboxd</strong>\n\n")
+                # Save statistics file only for categories that track stats
+                if category not in OFFICIAL_RUNTIME_CATEGORIES:
+                    current_date = datetime.now()
+                    day = current_date.day
+                    if 10 <= day % 100 <= 20:
+                        suffix = 'th'
                     else:
-                        file.write(f"<strong>The {len(top_data)} Highest Rated {display_category} Movies On Letterboxd</strong>\n\n")
-                    file.write(f"<strong>Last updated: {formatted_date}</strong>\n\n")
-                    file.write("<a href=https://letterboxd.com/bigbadraj/list/the-official-list-index/> Check out more of the lists I update regularly! </a>\n\n")
-                    file.write("<strong>Film eligibility criteria:</strong>\n")
-                    file.write("-- Must have a minimum of 1,000 reviews on Letterboxd.\n")
-                    file.write("-- Cannot be a short film (minimum 40 minutes).\n")
-                    file.write("-- Cannot be a television miniseries.\n")
-                    file.write("-- Cannot be a compilation of short serials.\n")
-                    file.write("-- Cannot be a documentary.\n")
-                    file.write("-- Cannot be a non-narrative project (paint drying for 10 hours, a timelapse of the construction of a building, abstract images, etc).\n")
-                    file.write("-- Cannot be a recording of a live performance (stand-up specials, recordings of live theater, concert films, etc).\n")
-                    file.write("-- Cannot be a television special episode, though feature film spin-offs from television shows are allowed.\n")
-                    file.write("-- Feature film spin-offs from television shows must contain original material, not just recap or compilation of existing material.\n")
-                    file.write("-- Entries that have scores inflated because they share a name with a popular television show are removed, as I notice them.\n\n")
+                        suffix = {1: 'st', 2: 'nd', 3: 'rd'}.get(day % 10, 'th')
+                    formatted_date = current_date.strftime('%B ') + str(day) + suffix + f", {current_date.year}"
 
-                    # Write statistics for each category
-                    category_display_names = {
-                        'director_counts': 'directors',
-                        'actor_counts': 'actors',
-                        'decade_counts': 'decades',
-                        'genre_counts': 'genres',
-                        'studio_counts': 'studios',
-                        'language_counts': 'languages',
-                        'country_counts': 'countries'
-                    }
+                    # Save statistics for this category
+                    stats_path = os.path.join(output_dir, f'stats_{category}_{"pop" if self.scrape_type == "popular" else "top"}_movies.txt')
+                    with open(stats_path, mode='w', encoding='utf-8') as file:
+                        # Format the category name for display
+                        display_category = category.replace('_', ' ').replace('Minutes', 'minutes')
+                        if self.scrape_type == "popular":
+                            file.write(f"<strong>The {len(top_data)} Most Popular {display_category} Movies On Letterboxd</strong>\n\n")
+                        else:
+                            file.write(f"<strong>The {len(top_data)} Highest Rated {display_category} Movies On Letterboxd</strong>\n\n")
+                        file.write(f"<strong>Last updated: {formatted_date}</strong>\n\n")
+                        file.write("<a href=https://letterboxd.com/bigbadraj/list/the-official-list-index/> Check out more of the lists I update regularly! </a>\n\n")
+                        file.write("<strong>Film eligibility criteria:</strong>\n")
+                        file.write("-- Must have a minimum of 1,000 reviews on Letterboxd.\n")
+                        file.write("-- Cannot be a short film (minimum 40 minutes).\n")
+                        file.write("-- Cannot be a television miniseries.\n")
+                        file.write("-- Cannot be a compilation of short serials.\n")
+                        file.write("-- Cannot be a documentary.\n")
+                        file.write("-- Cannot be a non-narrative project (paint drying for 10 hours, a timelapse of the construction of a building, abstract images, etc).\n")
+                        file.write("-- Cannot be a recording of a live performance (stand-up specials, recordings of live theater, concert films, etc).\n")
+                        file.write("-- Cannot be a television special episode, though feature film spin-offs from television shows are allowed.\n")
+                        file.write("-- Feature film spin-offs from television shows must contain original material, not just recap or compilation of existing material.\n")
+                        file.write("-- Entries that have scores inflated because they share a name with a popular television show are removed, as I notice them.\n\n")
 
-                    for category_name, counts in runtime_stats[category].items():
-                        if category_name != 'film_data':
-                            # Use the mapping for display names
-                            display_name = category_display_names.get(category_name, category_name.replace('_', ' '))
-                            file.write(f"<strong>The ten most appearing {display_name}:</strong>\n")
-                            for item, count in sorted(counts.items(), key=lambda item: item[1], reverse=True)[:10]:
-                                file.write(f"{item}: {count}\n")
-                            file.write("\n")
-                    file.write("<strong>If you notice any movies you believe should/should not be included just let me know!</strong>")
+                        # Write statistics for each category
+                        category_display_names = {
+                            'director_counts': 'directors',
+                            'actor_counts': 'actors',
+                            'decade_counts': 'decades',
+                            'genre_counts': 'genres',
+                            'studio_counts': 'studios',
+                            'language_counts': 'languages',
+                            'country_counts': 'countries'
+                        }
+
+                        for category_name, counts in runtime_stats[category].items():
+                            if category_name != 'film_data':
+                                # Use the mapping for display names
+                                display_name = category_display_names.get(category_name, category_name.replace('_', ' '))
+                                file.write(f"<strong>The ten most appearing {display_name}:</strong>\n")
+                                for item, count in sorted(counts.items(), key=lambda item: item[1], reverse=True)[:10]:
+                                    file.write(f"{item}: {count}\n")
+                                file.write("\n")
+                        file.write("<strong>If you notice any movies you believe should/should not be included just let me know!</strong>")
 
     def recalculate_runtime_statistics(self, category, top_data):
         """Recalculate statistics for a runtime category based on the limited film data."""

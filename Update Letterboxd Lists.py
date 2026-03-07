@@ -47,6 +47,9 @@ paths = get_os_specific_paths()
 output_dir = paths['output_dir']
 base_dir = paths['base_dir']
 
+# Firefox profile where you're signed into Letterboxd (about:profiles → Open Folder). Close Firefox before running.
+MY_FIREFOX_PROFILE_PATH = r'C:\Users\bigba\AppData\Roaming\Mozilla\Firefox\Profiles\A1zmb2EC.Profile 1'
+
 # Define a custom print function
 def log_and_print(message: str):
     """Prints a message to the terminal and appends it to All_Outputs.csv."""
@@ -212,7 +215,12 @@ def update_letterboxd_lists():
     }
 
     # Initialize the Firefox driver
-    driver = webdriver.Firefox()
+    options = Options()
+    if MY_FIREFOX_PROFILE_PATH and os.path.isdir(MY_FIREFOX_PROFILE_PATH):
+        options.add_argument("-profile")
+        options.add_argument(MY_FIREFOX_PROFILE_PATH)
+    service = Service()
+    driver = webdriver.Firefox(service=service, options=options)
 
     try:
         log_and_print("✅ Navigating to Letterboxd homepage.")

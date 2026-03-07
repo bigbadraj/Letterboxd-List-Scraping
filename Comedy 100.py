@@ -44,6 +44,9 @@ DEBUG_LIST_PAGE = False
 # Set to True to scrape from list only (no per-film page visits for rating count)
 LIST_ONLY = True
 
+# Firefox profile where you're signed into Letterboxd (about:profiles → Open Folder). Close Firefox before running.
+MY_FIREFOX_PROFILE_PATH = r'C:\Users\bigba\AppData\Roaming\Mozilla\Firefox\Profiles\A1zmb2EC.Profile 1'
+
 # Define a custom print function
 def print_to_csv(message: str):
     """Prints a message to the terminal and appends it to All_Outputs.csv."""
@@ -65,7 +68,9 @@ def setup_webdriver():
     """Create headless Firefox driver for loading JS-rendered list pages."""
     options = Options()
     options.headless = True
-    options.set_preference("permissions.default.image", 2)
+    if MY_FIREFOX_PROFILE_PATH and os.path.isdir(MY_FIREFOX_PROFILE_PATH):
+        options.add_argument("-profile")
+        options.add_argument(MY_FIREFOX_PROFILE_PATH)
     service = Service()
     return webdriver.Firefox(service=service, options=options)
 

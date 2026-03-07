@@ -105,11 +105,16 @@ class MovieCache:
         # Save to Excel immediately
         self.cache.to_excel(EXCEL_PATH, index=False)
 
-# Set up Firefox options and service
-options = Options()
-options.headless = False  # Set to True if you don't want the browser to open
 
-# Initialize the Firefox driver with GeckoDriver in PATH
+# Firefox profile where you're signed into Letterboxd (about:profiles → Open Folder). Close Firefox before running.
+MY_FIREFOX_PROFILE_PATH = r'C:\Users\bigba\AppData\Roaming\Mozilla\Firefox\Profiles\A1zmb2EC.Profile 1'
+
+options = Options()
+options.headless = False
+if MY_FIREFOX_PROFILE_PATH and os.path.isdir(MY_FIREFOX_PROFILE_PATH):
+    options.add_argument("-profile")
+    options.add_argument(MY_FIREFOX_PROFILE_PATH)
+
 service = Service()
 driver = webdriver.Firefox(service=service, options=options)
 
