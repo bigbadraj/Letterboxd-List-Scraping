@@ -1,14 +1,10 @@
 import time
-import random
-from selenium import webdriver
-from selenium.webdriver.firefox.service import Service
-from selenium.webdriver.firefox.options import Options
+import undetected_chromedriver as uc
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.common.keys import Keys
 import pandas as pd
-import re
 import os
 import platform
 import glob
@@ -47,8 +43,10 @@ paths = get_os_specific_paths()
 output_dir = paths['output_dir']
 base_dir = paths['base_dir']
 
-# Firefox profile where you're signed into Letterboxd (about:profiles → Open Folder). Close Firefox before running.
-MY_FIREFOX_PROFILE_PATH = r'C:\Users\bigba\AppData\Roaming\Mozilla\Firefox\Profiles\A1zmb2EC.Profile 1'
+# Optional: Chrome user data dir if you want to reuse a profile (e.g. already logged into Letterboxd).
+# Leave None to use a fresh profile each run. Close any open Chrome using that profile before running.
+CHROME_USER_DATA_DIR = None  # e.g. r'C:\Users\bigba\AppData\Local\Google\Chrome\User Data'
+CHROME_PROFILE_DIR = None    # e.g. 'Default' or 'Profile 1'
 
 # Define a custom print function
 def log_and_print(message: str):
@@ -214,15 +212,24 @@ def update_letterboxd_lists():
         }
     }
 
-    # Initialize the Firefox driver
-    options = Options()
-    if MY_FIREFOX_PROFILE_PATH and os.path.isdir(MY_FIREFOX_PROFILE_PATH):
-        options.add_argument("-profile")
-        options.add_argument(MY_FIREFOX_PROFILE_PATH)
-    service = Service()
-    driver = webdriver.Firefox(service=service, options=options)
+    # Initialize the Chrome driver (undetected-chromedriver to reduce Cloudflare/captcha blocks)
+    options = uc.ChromeOptions()
+    options.add_argument("--start-maximized")
+    options.add_argument("--disable-blink-features=AutomationControlled")
+    if CHROME_USER_DATA_DIR and os.path.isdir(CHROME_USER_DATA_DIR):
+        options.add_argument(f"--user-data-dir={CHROME_USER_DATA_DIR}")
+        if CHROME_PROFILE_DIR:
+            options.add_argument(f"--profile-directory={CHROME_PROFILE_DIR}")
+    # version_main must match your installed Chrome major version (e.g. 145); adjust if you update Chrome
+    driver = uc.Chrome(options=options, use_subprocess=True, version_main=145)
 
-    # Maximize Firefox window to full screen first
+    # Suppress noisy destructor logging from undetected_chromedriver on interpreter shutdown
+    try:
+        driver.__del__ = lambda self=driver: None
+    except Exception:
+        pass
+
+    # Maximize Chrome window to full screen first
     driver.maximize_window()
     time.sleep(1)
 

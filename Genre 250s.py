@@ -1,11 +1,14 @@
-# Import necessary libraries
+"""
+Genre 250s — Chrome version.
+Same as 'Genre 250s.py' but uses Chrome with undetected-chromedriver to reduce
+Cloudflare Turnstile / captcha blocks. Install with: pip install undetected-chromedriver
+"""
+# Import necessary libraries (Chrome + undetected-chromedriver to reduce Cloudflare/captcha blocks)
 import time
 import random
 import signal
 import sys
-from selenium import webdriver
-from selenium.webdriver.firefox.service import Service
-from selenium.webdriver.firefox.options import Options
+import undetected_chromedriver as uc
 from selenium.webdriver.common.by import By
 import pandas as pd
 import requests
@@ -69,8 +72,10 @@ paths = get_os_specific_paths()
 BASE_DIR = paths['output_dir']
 LIST_DIR = paths['base_dir']
 
-# Firefox profile where you're signed into Letterboxd (about:profiles → Open Folder). Close Firefox before running.
-MY_FIREFOX_PROFILE_PATH = r'C:\Users\bigba\AppData\Roaming\Mozilla\Firefox\Profiles\A1zmb2EC.Profile 1'
+# Optional: Chrome user data dir if you want to reuse a profile (e.g. already logged into Letterboxd).
+# Leave None to use a fresh profile each run. Close any open Chrome using that profile before running.
+CHROME_USER_DATA_DIR = None  # e.g. r'C:\Users\bigba\AppData\Local\Google\Chrome\User Data'
+CHROME_PROFILE_DIR = None    # e.g. 'Default' or 'Profile 1'
 
 # Define a custom print function
 def print_to_csv(message: str):
@@ -632,35 +637,27 @@ class MovieProcessor:
             print_to_csv(f"ERROR checking zero reviews: {str(e)}")
             return False
 
-def setup_webdriver() -> webdriver.Firefox:
-    options = Options()
-    options.headless = True
-    if MY_FIREFOX_PROFILE_PATH and os.path.isdir(MY_FIREFOX_PROFILE_PATH):
-        options.add_argument("-profile")
-        options.add_argument(MY_FIREFOX_PROFILE_PATH)
-    options.set_preference("dom.ipc.plugins.enabled.libflashplayer.so", "false")
-    
-    # Add these preferences to prevent random downloads
-    options.set_preference("browser.download.folderList", 2)  # Use custom download location
-    options.set_preference("browser.download.manager.showWhenStarting", False)  # Don't show download manager
-    options.set_preference("browser.download.dir", os.path.join(BASE_DIR, "downloads"))  # Set download directory
-    options.set_preference("browser.helperApps.neverAsk.saveToDisk", "text/html,text/plain")  # Don't ask to save HTML files
-    options.set_preference("browser.helperApps.alwaysAsk.force", False)  # Don't force asking
-    options.set_preference("browser.download.manager.alertOnEXEOpen", False)  # Don't alert on exe downloads
-    options.set_preference("browser.download.manager.focusWhenStarting", False)  # Don't focus download manager
-    options.set_preference("browser.download.manager.useWindow", False)  # Don't use window for downloads
-    options.set_preference("browser.download.manager.showAlertOnComplete", False)  # Don't show alert when complete
-    options.set_preference("browser.download.manager.closeWhenDone", True)  # Close download manager when done
-    
-    # Add these optimizations:
-    options.set_preference("javascript.enabled", True)  # Keep JS enabled but optimize
-    options.set_preference("network.http.connection-timeout", 30)  # Reduce timeout
-    options.set_preference("network.http.max-connections-per-server", 10)  # Limit connections
-    options.set_preference("browser.cache.disk.enable", True)  # Enable disk cache
-    options.set_preference("browser.cache.memory.enable", True)  # Enable memory cache
-    
-    service = Service()
-    return webdriver.Firefox(service=service, options=options)
+def setup_webdriver():
+    """Create Chrome driver using undetected-chromedriver to avoid Cloudflare/captcha detection."""
+    options = uc.ChromeOptions()
+    # Prefer normal window (undetected_chromedriver is already less detectable; headless can still be flagged)
+    options.add_argument("--start-maximized")
+    options.add_argument("--disable-blink-features=AutomationControlled")
+    # Optional: use existing Chrome profile for Letterboxd login
+    if CHROME_USER_DATA_DIR and os.path.isdir(CHROME_USER_DATA_DIR):
+        options.add_argument(f"--user-data-dir={CHROME_USER_DATA_DIR}")
+        if CHROME_PROFILE_DIR:
+            options.add_argument(f"--profile-directory={CHROME_PROFILE_DIR}")
+    # Download preferences (Chrome uses prefs, set via options where possible)
+    prefs = {
+        "download.default_directory": os.path.join(BASE_DIR, "downloads"),
+        "download.prompt_for_download": False,
+        "safebrowsing.enabled": True,
+    }
+    options.add_experimental_option("prefs", prefs)
+    # version_main must match your installed Chrome major version (e.g. 145); adjust if you update Chrome
+    driver = uc.Chrome(options=options, use_subprocess=True, version_main=145)
+    return driver
 
 def format_time(seconds):
     """Format seconds into hours, minutes, seconds string"""
