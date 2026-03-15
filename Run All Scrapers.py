@@ -11,11 +11,11 @@ sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
 
 # Scripts to run (comment out any you don't need)
 SCRIPTS = [
-    # ("BoxOfficeMojo 250s.py", "Box Office Mojo Scraper"),
+    ("BoxOfficeMojo 250s.py", "Box Office Mojo Scraper"),
     ("Top 250 Anything.py", "Letterboxd Min Filtering Scraper"),
     ("Comedy 100.py", "Letterboxd Comedy List Scraper"),
-    # ("5000 Pop and Top Chrome.py", "Letterboxd 5000 Pop and Top Films Scraper"),
-    # ("Genre 250s Chrome.py", "Top 250 Genres Scraper"),
+    ("5000 Pop and Top.py", "Letterboxd 5000 Pop and Top Films Scraper"),
+    ("Genre 250s.py", "Top 250 Genres Scraper"),
     ("Update Letterboxd Lists.py", "Update Lists on Letterboxd"),
     ("Update JSONs.py", "Update Github JSON Files from Letterboxd Lists"),
 ]

@@ -4,17 +4,20 @@ import json
 import time
 import csv
 import random
-from selenium import webdriver
-from selenium.webdriver.firefox.service import Service
-from selenium.webdriver.firefox.options import Options
+import undetected_chromedriver as uc
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-import pandas as pd
-import re
+from selenium.common.exceptions import NoSuchWindowException, WebDriverException
 import os
 import platform
 from tqdm import tqdm
+
+# Silence undetected_chromedriver's noisy __del__ that logs WinError 6 on shutdown
+try:
+    uc.Chrome.__del__ = lambda self: None
+except Exception:
+    pass
 
 # Detect operating system and set appropriate paths
 def get_os_specific_paths():
@@ -44,8 +47,10 @@ DEBUG_LIST_PAGE = False
 # Set to True to scrape from list only (no per-film page visits for rating count)
 LIST_ONLY = True
 
-# Firefox profile where you're signed into Letterboxd (about:profiles → Open Folder). Close Firefox before running.
-MY_FIREFOX_PROFILE_PATH = r'C:\Users\bigba\AppData\Roaming\Mozilla\Firefox\Profiles\A1zmb2EC.Profile 1'
+# Optional: Chrome user data dir if you want to reuse a profile (e.g. already logged into Letterboxd).
+# Leave None to use a fresh profile each run. Close any open Chrome using that profile before running.
+CHROME_USER_DATA_DIR = None  # e.g. r'C:\Users\bigba\AppData\Local\Google\Chrome\User Data'
+CHROME_PROFILE_DIR = None    # e.g. 'Default' or 'Profile 1'
 
 # Define a custom print function
 def print_to_csv(message: str):
@@ -65,14 +70,22 @@ def create_session():
 # The process_film function is no longer needed since we extract data directly from the list page
 
 def setup_webdriver():
-    """Create headless Firefox driver for loading JS-rendered list pages."""
-    options = Options()
-    options.headless = True
-    if MY_FIREFOX_PROFILE_PATH and os.path.isdir(MY_FIREFOX_PROFILE_PATH):
-        options.add_argument("-profile")
-        options.add_argument(MY_FIREFOX_PROFILE_PATH)
-    service = Service()
-    return webdriver.Firefox(service=service, options=options)
+    """
+    Create Chrome driver using undetected-chromedriver to avoid Cloudflare/captcha detection,
+    mirroring the Genre 250s Chrome setup.
+    """
+    options = uc.ChromeOptions()
+    # Prefer normal window (undetected_chromedriver is already less detectable; headless can still be flagged)
+    options.add_argument("--start-maximized")
+    options.add_argument("--disable-blink-features=AutomationControlled")
+    # Optional: use existing Chrome profile for Letterboxd login
+    if CHROME_USER_DATA_DIR and os.path.isdir(CHROME_USER_DATA_DIR):
+        options.add_argument(f"--user-data-dir={CHROME_USER_DATA_DIR}")
+        if CHROME_PROFILE_DIR:
+            options.add_argument(f"--profile-directory={CHROME_PROFILE_DIR}")
+    # version_main must match your installed Chrome major version (e.g. 145); adjust if you update Chrome
+    driver = uc.Chrome(options=options, use_subprocess=True, version_main=145)
+    return driver
 
 
 def debug_list_page(max_items=5):
@@ -260,7 +273,13 @@ def main():
             print_to_csv(f"\n=== Page {page} ===")
             print_to_csv(f"Progress: {len(all_movies)}/{max_films} movies collected")
             try:
-                driver.get(url)
+                try:
+                    driver.get(url)
+                except (NoSuchWindowException, WebDriverException) as e:
+                    # Mirror Update Letterboxd Lists behavior: log clearly and abort if the browser dies early.
+                    print_to_csv("❌ Browser window closed while loading list page; aborting Comedy 100 updates.")
+                    raise e
+
                 WebDriverWait(driver, 15).until(
                     EC.presence_of_element_located((By.CSS_SELECTOR, 'li.posteritem'))
                 )

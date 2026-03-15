@@ -1,8 +1,6 @@
 import time
 import random
-from selenium import webdriver
-from selenium.webdriver.firefox.service import Service
-from selenium.webdriver.firefox.options import Options
+import undetected_chromedriver as uc
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
@@ -12,6 +10,12 @@ import os
 import platform
 from tqdm import tqdm
 import csv
+
+# Silence undetected_chromedriver's noisy __del__ that logs WinError 6 on shutdown
+try:
+    uc.Chrome.__del__ = lambda self: None
+except Exception:
+    pass
 
 # Detect operating system and set appropriate paths
 def get_os_specific_paths():
@@ -39,6 +43,11 @@ def get_os_specific_paths():
 paths = get_os_specific_paths()
 EXCEL_PATH = paths['excel_path']
 output_dir = paths['output_dir']
+
+# Optional: Chrome user data dir if you want to reuse a profile (e.g. already logged into Letterboxd).
+# Leave None to use a fresh profile each run. Close any open Chrome using that profile before running.
+CHROME_USER_DATA_DIR = None  # e.g. r'C:\Users\bigba\AppData\Local\Google\Chrome\User Data'
+CHROME_PROFILE_DIR = None    # e.g. 'Default' or 'Profile 1'
 
 # Define a custom print function
 def print_to_csv(message: str):
@@ -104,19 +113,34 @@ class MovieCache:
         
         # Save to Excel immediately
         self.cache.to_excel(EXCEL_PATH, index=False)
+    
+    
+def setup_webdriver():
+    """
+    Create Chrome driver using undetected-chromedriver, mirroring Genre 250s Chrome setup.
+    """
+    options = uc.ChromeOptions()
+    # Prefer normal window (undetected_chromedriver is already less detectable; headless can still be flagged)
+    options.add_argument("--start-maximized")
+    options.add_argument("--disable-blink-features=AutomationControlled")
+    # Optional: use existing Chrome profile for Letterboxd login
+    if CHROME_USER_DATA_DIR and os.path.isdir(CHROME_USER_DATA_DIR):
+        options.add_argument(f"--user-data-dir={CHROME_USER_DATA_DIR}")
+        if CHROME_PROFILE_DIR:
+            options.add_argument(f"--profile-directory={CHROME_PROFILE_DIR}")
+    # Download preferences (Chrome uses prefs, set via options where possible)
+    prefs = {
+        "download.default_directory": output_dir,
+        "download.prompt_for_download": False,
+        "safebrowsing.enabled": True,
+    }
+    options.add_experimental_option("prefs", prefs)
+    # version_main must match your installed Chrome major version (e.g. 145); adjust if you update Chrome
+    driver = uc.Chrome(options=options, use_subprocess=True, version_main=145)
+    return driver
 
 
-# Firefox profile where you're signed into Letterboxd (about:profiles → Open Folder). Close Firefox before running.
-MY_FIREFOX_PROFILE_PATH = r'C:\Users\bigba\AppData\Roaming\Mozilla\Firefox\Profiles\A1zmb2EC.Profile 1'
-
-options = Options()
-options.headless = False
-if MY_FIREFOX_PROFILE_PATH and os.path.isdir(MY_FIREFOX_PROFILE_PATH):
-    options.add_argument("-profile")
-    options.add_argument(MY_FIREFOX_PROFILE_PATH)
-
-service = Service()
-driver = webdriver.Firefox(service=service, options=options)
+driver = setup_webdriver()
 
 # Initialize movie cache
 movie_cache = MovieCache()

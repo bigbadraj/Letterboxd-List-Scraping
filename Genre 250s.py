@@ -1,8 +1,3 @@
-"""
-Genre 250s — Chrome version.
-Same as 'Genre 250s.py' but uses Chrome with undetected-chromedriver to reduce
-Cloudflare Turnstile / captcha blocks. Install with: pip install undetected-chromedriver
-"""
 # Import necessary libraries (Chrome + undetected-chromedriver to reduce Cloudflare/captcha blocks)
 import time
 import random
@@ -29,6 +24,12 @@ from selenium.webdriver.support import expected_conditions as EC
 import json
 from selenium.common.exceptions import NoSuchElementException
 from credentials_loader import load_credentials
+
+# Silence undetected_chromedriver's noisy __del__ that logs WinError 6 on shutdown
+try:
+    uc.Chrome.__del__ = lambda self: None
+except Exception:
+    pass
 
 # Global variable to store the current scraper for cleanup
 current_scraper = None

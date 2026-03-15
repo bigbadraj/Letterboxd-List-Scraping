@@ -23,6 +23,12 @@ import json
 from selenium.common.exceptions import NoSuchElementException
 from credentials_loader import load_credentials
 
+# Silence undetected_chromedriver's noisy __del__ that logs WinError 6 on shutdown
+try:
+    uc.Chrome.__del__ = lambda self: None
+except Exception:
+    pass
+
 # Detect operating system and set appropriate paths
 def get_os_specific_paths():
     """Return OS-specific file paths."""

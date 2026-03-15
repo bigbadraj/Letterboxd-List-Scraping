@@ -342,7 +342,6 @@ def main():
         {"url": "https://letterboxd.com/official/list/top-100-underseen-films/"},
         {"url": "https://letterboxd.com/stateofhailey/list/letterboxds-top-250-romantic-comedy-films/"},
         {"url": "https://letterboxd.com/jumpy/list/letterboxds-official-top-250-anime-tv-miniseries/"},
-        {"url": "https://letterboxd.com/jbutts15/list/the-complete-criterion-collection/"},
         {"url": "https://letterboxd.com/flanaganfilm/list/flanagans-favorites-my-top-100/"},
         {"url": "https://letterboxd.com/zishi/list/four-greatest-films-of-each-year-according/"},
         {"url": "https://letterboxd.com/bigbadraj/list/top-250-highest-rated-action-narrative-feature/"},
