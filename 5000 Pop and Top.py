@@ -312,6 +312,7 @@ class MovieProcessor:
         self.whitelist_lookup = {}
         self.zero_reviews = None
         self.zero_reviews_lookup = {}
+        self.current_year = datetime.now().year
         self.load_whitelist()
         self.load_zero_reviews()
         
@@ -959,7 +960,17 @@ class MovieProcessor:
         """Add a movie to the zero reviews list using URL as primary identifier."""
         if not film_url:
             return
-            
+
+        # Only add movies whose release year is in the past.
+        # Skip if year is this year or in the future, or if year is invalid.
+        try:
+            year_int = int(str(release_year).strip())
+            if year_int >= self.current_year:
+                return
+        except (ValueError, TypeError):
+            # If we can't parse a valid year, don't add to zero reviews
+            return
+
         try:
             # Check if URL already exists in lookup
             if film_url in self.zero_reviews_lookup:
@@ -981,6 +992,33 @@ class MovieProcessor:
                 
         except Exception as e:
             print_to_csv(f"ERROR adding to zero reviews: {str(e)}")
+
+    def is_in_zero_reviews(self, film_url: str) -> bool:
+        """Check if a movie URL exists in the zero reviews list without side effects."""
+        if not film_url:
+            return False
+        try:
+            return film_url in self.zero_reviews_lookup
+        except Exception as e:
+            print_to_csv(f"ERROR checking zero reviews membership: {str(e)}")
+            return False
+
+    def remove_from_zero_reviews(self, film_title: str, film_url: str):
+        """Remove a movie from the zero reviews list when it is confirmed to have reviews."""
+        if not film_url:
+            return
+        try:
+            if film_url in self.zero_reviews_lookup:
+                idx_to_remove = self.zero_reviews_lookup[film_url]
+                # Remove the row
+                self.zero_reviews = self.zero_reviews.drop(idx_to_remove)
+                # Remove from lookup
+                del self.zero_reviews_lookup[film_url]
+                # Save the updated DataFrame
+                self.zero_reviews.to_excel(ZERO_REVIEWS_PATH, index=False)
+                print_to_csv(f"🗑️  Removed {film_title} from zero reviews list (found on early popular page).")
+        except Exception as e:
+            print_to_csv(f"ERROR removing from zero reviews: {str(e)}")
 
     def is_zero_reviews(self, film_title: str, release_year: str, film_url: str) -> bool:
         """Check if a movie is in the zero reviews list using URL as primary identifier."""
@@ -2005,6 +2043,12 @@ class LetterboxdScraper:
 
                 # Increment total_titles for each movie we process, including blacklisted ones
                 self.total_titles += 1
+                
+                # If we're scraping popular and this movie is in the first 30 pages,
+                # and it previously appeared in the zero reviews list, remove it
+                # since it clearly now has reviews.
+                if self.scrape_type == "popular" and self.page_number <= 30 and self.processor.is_in_zero_reviews(film_url):
+                    self.processor.remove_from_zero_reviews(film_title, film_url)
                 
                 # Check if movie is in zero reviews list (only for pages 31 and onward)
                 if self.page_number >= 31 and self.processor.is_zero_reviews(film_title, release_year, film_url):
