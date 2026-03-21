@@ -151,6 +151,7 @@ class MovieProcessor:
         self.whitelist_lookup = {}
         self.zero_reviews = None
         self.zero_reviews_lookup = {}
+        self.current_year = datetime.now().year
         self.load_whitelist()
         self.load_zero_reviews()
         
@@ -588,6 +589,16 @@ class MovieProcessor:
     def add_to_zero_reviews(self, film_title: str, release_year: str, film_url: str):
         """Add a movie to the zero reviews list using URL as primary identifier."""
         if not film_url:
+            return
+
+        # Only add movies whose release year is in the past.
+        # Skip if year is this year or in the future, or if year is invalid.
+        try:
+            year_int = int(str(release_year).strip())
+            if year_int >= self.current_year:
+                return
+        except (ValueError, TypeError):
+            # If we can't parse a valid year, don't add to zero reviews
             return
             
         try:

@@ -93,7 +93,7 @@ MAX_MOVIES_5000 = 5000
 MAX_MOVIES_MPAA = 250
 MAX_MOVIES_RUNTIME = 250
 MAX_MOVIES_CONTINENT = 250
-MAX_MOVIES_RUNTIME_OFFICIAL = 600  # Limit for 100 min or less / 150 min or more (no stats tracked)
+MAX_MOVIES_RUNTIME_OFFICIAL = 260  # Limit for 100 min or less / 150 min or more (no stats tracked)
 
 # Configure settings
 MIN_RATING_COUNT = 1000
