@@ -151,7 +151,7 @@ def process_page(session, url, movies_data, max_films):
 
 def main():
     # Configure these as needed
-    base_url = "https://letterboxd.com/bigbadraj/list/every-movie-ive-seen-ranked/"
+    base_url = "https://letterboxd.com/bigbadraj/list/top-250-narrative-films-of-less-than-100/"
     max_films = None  # Set to None for no limit
     
     if base_url[-1] != '/':
@@ -171,7 +171,7 @@ def main():
         page += 1
     
     df = pd.DataFrame(movies_data.items)
-    output_csv = os.path.join(output_dir, 'film_titles.csv')
+    output_csv = os.path.join(output_dir, 'csv_film_titles.csv')
     df.to_csv(output_csv, index=False)
     print(f"\nScraping complete. {len(movies_data)} films saved to {output_csv}")
 

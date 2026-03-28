@@ -93,11 +93,11 @@ MAX_MOVIES_5000 = 5000
 MAX_MOVIES_MPAA = 250
 MAX_MOVIES_RUNTIME = 250
 MAX_MOVIES_CONTINENT = 250
-MAX_MOVIES_RUNTIME_OFFICIAL = 260  # Limit for 100 min or less / 150 min or more (no stats tracked)
+MAX_MOVIES_RUNTIME_OFFICIAL = 260  # Limit for under 100 min / over 150 min official lists (no stats tracked)
 
 # Configure settings
 MIN_RATING_COUNT = 1000
-MIN_RATING_COUNT_OFFICIAL = 5000  # Official runtime lists (100 min or less, 150 min or more) only
+MIN_RATING_COUNT_OFFICIAL = 5000  # Official runtime lists (under 100 min, over 150 min) only
 MIN_RUNTIME = 40
 MAX_RETRIES = 50
 RETRY_DELAY = 15
@@ -106,8 +106,13 @@ MAX_RETRY_DELAY = 300  # Maximum delay (5 minutes)
 CHUNK_SIZE = 1900
 
 # Human-like delays to reduce bot detection (set to (0, 0) to disable for speed)
-HUMAN_DELAY_BETWEEN_FILMS = (1.0, 2.5)  # seconds between visiting each film page
-HUMAN_DELAY_BETWEEN_PAGES = (1.5, 3.0)  # seconds between listing pages
+HUMAN_DELAY_BETWEEN_FILMS = (0,0)  # seconds between visiting each film page
+HUMAN_DELAY_BETWEEN_PAGES = (0,0)  # seconds between listing pages
+
+# Run both popular and rating scraping (config)
+scrape_types = ["popular", "rating"]
+# scrape_types = ["rating"]
+# scrape_types = ["popular"]
 
 # Configure specific maxes
 MAX_180_POPULAR = 75
@@ -471,9 +476,9 @@ class MovieProcessor:
             if runtime > 239:
                 categories.append('4_Hours_or_Greater')
             if getattr(self, 'scrape_type', 'popular') == 'rating':
-                if runtime <= 100:
+                if runtime < 100:
                     categories.append('100_Minutes_or_Less')
-                if runtime >= 150:
+                if runtime > 150:
                     categories.append('150_Minutes_or_More')
         
             for category in categories:
@@ -696,9 +701,9 @@ class MovieProcessor:
         if runtime > 239:
             categories.append('4_Hours_or_Greater')
         if self.scrape_type == 'rating':
-            if runtime <= 100:
+            if runtime < 100:
                 categories.append('100_Minutes_or_Less')
-            if runtime >= 150:
+            if runtime > 150:
                 categories.append('150_Minutes_or_More')
                     
         # Add to each applicable category
@@ -862,11 +867,31 @@ class MovieProcessor:
 
         # Directors
         try:
-            director_elements = driver.find_elements(By.CSS_SELECTOR, 'span.creatorlist a.contributor')
+            director_names = []
+            director_elements = driver.find_elements(
+                By.CSS_SELECTOR,
+                "#tab-crew a.text-slug[href*='/director/']"
+            )
+            if not director_elements:
+                director_elements = driver.find_elements(
+                    By.XPATH,
+                    "//div[@id='tab-crew']//h3[.//span[contains(@class,'crewrole') and normalize-space()='Director']]/following-sibling::div[1]//a[contains(@class,'text-slug')]"
+                )
+            if not director_elements:
+                director_elements = driver.find_elements(By.CSS_SELECTOR, "span.creatorlist a.contributor, span.creatorlist a.contributor span.prettify")
             for director in director_elements:
                 director_name = director.text.strip()
-                if director_name:
-                    max_movies_5000_stats['director_counts'][director_name] += 1
+                if director_name and director_name not in director_names:
+                    director_names.append(director_name)
+            if not director_names:
+                page_source = driver.page_source
+                director_matches = re.findall(r'href="/director/[^"]+"[^>]*>([^<]+)</a>', page_source)
+                for match in director_matches:
+                    director_name = match.strip()
+                    if director_name and director_name not in director_names:
+                        director_names.append(director_name)
+            for director_name in director_names:
+                max_movies_5000_stats['director_counts'][director_name] += 1
         except Exception:
             pass
 
@@ -1122,9 +1147,41 @@ def extract_all_movie_data(driver) -> Optional[Dict]:
                 return null;
             })(),
             
-            // Directors
-            directors: Array.from(document.querySelectorAll('span.creatorlist a.contributor'))
-                .map(el => el.textContent.trim()).filter(Boolean),
+            // Directors (prefer direct /director/ links in crew tab, fallback to role heading and legacy creatorlist)
+            directors: (() => {
+                const names = [];
+                const seen = new Set();
+                const directLinks = Array.from(document.querySelectorAll('#tab-crew a.text-slug[href*="/director/"]'));
+                for (const link of directLinks) {
+                    const name = (link.textContent || '').trim();
+                    if (name && !seen.has(name)) {
+                        seen.add(name);
+                        names.push(name);
+                    }
+                }
+                if (names.length) return names;
+
+                const crewHeadings = Array.from(document.querySelectorAll('#tab-crew h3'));
+                for (const h3 of crewHeadings) {
+                    const fullRole = h3.querySelector('.crewrole.-full')?.textContent?.trim() || '';
+                    const shortRole = h3.querySelector('.crewrole.-short')?.textContent?.trim() || '';
+                    if (fullRole === 'Director' || shortRole === 'Director') {
+                        const slugContainer = h3.nextElementSibling;
+                        const links = slugContainer ? slugContainer.querySelectorAll('a.text-slug') : [];
+                        for (const link of links) {
+                            const name = (link.textContent || '').trim();
+                            if (name && !seen.has(name)) {
+                                seen.add(name);
+                                names.push(name);
+                            }
+                        }
+                    }
+                }
+                if (names.length) return names;
+                return Array.from(document.querySelectorAll('span.creatorlist a.contributor, span.creatorlist a.contributor span.prettify'))
+                    .map(el => el.textContent.trim())
+                    .filter(Boolean);
+            })(),
             
             // Actors
             actors: Array.from(document.querySelectorAll('#tab-cast .text-sluglist a.text-slug.tooltip'))
@@ -1201,7 +1258,7 @@ def extract_all_movie_data(driver) -> Optional[Dict]:
                 release_year = meta_title.split('(')[-1].strip(')')
         
         # Build complete data structure
-        return {
+        extracted_data = {
             'Title': None,  # Will be set by caller
             'Year': release_year,
             'tmdbID': result.get('tmdbId') or None,
@@ -1217,6 +1274,8 @@ def extract_all_movie_data(driver) -> Optional[Dict]:
             'Actors': result.get('actors', []),
             'Link': None  # Will be set by caller
         }
+        
+        return extracted_data
         
     except Exception as e:
         print_to_csv(f"Error extracting all movie data: {str(e)}")
@@ -1539,8 +1598,32 @@ class LetterboxdScraper:
                     'Languages', 'Countries', 'Directors', 'Genres', 'Studios', 'Actors'
                 ]
                 missing_fields = [field for field in required_fields if not info.get(field)]
-                if info == {} or missing_fields:
+                force_refresh_for_official = False
+                try:
+                    if self.scrape_type == 'rating':
+                        runtime_val = info.get('Runtime')
+                        rating_count_val = info.get('RatingCount', 0) or 0
+                        official_categories = []
+                        if isinstance(runtime_val, (int, float)):
+                            if runtime_val < 100:
+                                official_categories.append('100_Minutes_or_Less')
+                            if runtime_val > 150:
+                                official_categories.append('150_Minutes_or_More')
+                        for cat in official_categories:
+                            if cat in OFFICIAL_RUNTIME_CATEGORIES:
+                                if len(runtime_stats[cat]['film_data']) < MAX_MOVIES_RUNTIME_OFFICIAL and rating_count_val < MIN_RATING_COUNT_OFFICIAL:
+                                    force_refresh_for_official = True
+                                    break
+                except Exception:
+                    force_refresh_for_official = False
+
+                if info == {} or missing_fields or force_refresh_for_official:
                     try:
+                        if force_refresh_for_official and info != {} and not missing_fields:
+                            print_to_csv(
+                                f"ℹ️ Refreshing whitelist data for official runtime eligibility: {film_title} "
+                                f"(runtime={info.get('Runtime')}, saved_ratings={info.get('RatingCount', 0)}/{MIN_RATING_COUNT_OFFICIAL})"
+                            )
                         # Check if browser is still responsive before loading movie page
                         if not self.is_browser_responsive():
                             print_to_csv("🚨 Browser crash detected while loading movie page! Attempting recovery...")
@@ -1594,11 +1677,29 @@ class LetterboxdScraper:
                         # Extract directors
                         movie_directors = []
                         try:
-                            director_elements = self.driver.find_elements(By.CSS_SELECTOR, 'span.creatorlist a.contributor span.prettify')
+                            director_elements = self.driver.find_elements(
+                                By.CSS_SELECTOR,
+                                "#tab-crew a.text-slug[href*='/director/']"
+                            )
+                            if not director_elements:
+                                director_elements = self.driver.find_elements(
+                                    By.XPATH,
+                                    "//div[@id='tab-crew']//h3[.//span[contains(@class,'crewrole') and normalize-space()='Director']]/following-sibling::div[1]//a[contains(@class,'text-slug')]"
+                                )
+                            if not director_elements:
+                                director_elements = self.driver.find_elements(By.CSS_SELECTOR, "span.creatorlist a.contributor, span.creatorlist a.contributor span.prettify")
                             for director in director_elements:
                                 director_name = director.text.strip()
-                                if director_name:
+                                if director_name and director_name not in movie_directors:
                                     movie_directors.append(director_name)
+                            if not movie_directors:
+                                # Fallback: parse raw HTML for director links when Selenium lookups miss.
+                                page_source = self.driver.page_source
+                                director_matches = re.findall(r'href="/director/[^"]+"[^>]*>([^<]+)</a>', page_source)
+                                for match in director_matches:
+                                    director_name = match.strip()
+                                    if director_name and director_name not in movie_directors:
+                                        movie_directors.append(director_name)
                         except Exception:
                             pass
                         
@@ -2367,9 +2468,9 @@ class LetterboxdScraper:
                 if runtime > 239:
                     categories.append('4_Hours_or_Greater')
                 if self.scrape_type == 'rating':
-                    if runtime <= 100:
+                    if runtime < 100:
                         categories.append('100_Minutes_or_Less')
-                    if runtime >= 150:
+                    if runtime > 150:
                         categories.append('150_Minutes_or_More')
 
                 for category in categories:
@@ -2966,7 +3067,7 @@ class LetterboxdScraper:
     def save_runtime_results(self):
         """Save results for each runtime category."""
         for category in RUNTIME_CATEGORIES.keys():
-            # Official runtime lists (100 min or less, 150 min or more) are rating-only
+            # Official runtime lists (under 100 min, over 150 min) are rating-only
             if category in OFFICIAL_RUNTIME_CATEGORIES and self.scrape_type != 'rating':
                 continue
             category_data = runtime_stats[category]['film_data']
@@ -3158,7 +3259,8 @@ class LetterboxdScraper:
                 return None
 
             # Only update whitelist if the movie is already in it
-            if self.processor.is_whitelisted(film_title, release_year):
+            # Whitelist matching is URL-only in this script
+            if self.processor.is_whitelisted(film_title, release_year, film_url):
                 if self.processor.update_whitelist(film_title, release_year, movie_data, film_url):
                     print_to_csv(f"📝 Successfully updated whitelist data for {film_title}")
                     # Process through all output channels
@@ -3183,11 +3285,6 @@ def main():
     total_rejected = 0
     total_unfiltered_approved = 0
     total_unfiltered_denied = 0
-    
-    # Run both popular and rating scraping
-    scrape_types = ["popular", "rating"]
-    # scrape_types = ["rating"]
-    # scrape_types = ["popular"]
     
     for i, scrape_type in enumerate(scrape_types):
         scraper = None
