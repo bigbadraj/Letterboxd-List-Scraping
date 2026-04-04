@@ -373,7 +373,7 @@ def main():
         {"url": "https://letterboxd.com/bigbadraj/list/top-250-highest-rated-european-narrative/"},
         {"url": "https://letterboxd.com/bigbadraj/list/top-100-highest-rated-african-narrative-feature/"},
         {"url": "https://letterboxd.com/bigbadraj/list/top-250-highest-rated-asian-narrative-feature/"},
-        {"url": "https://letterboxd.com/bigbadraj/list/top-75-highest-rated-australian-narrative/"},
+        {"url": "https://letterboxd.com/bigbadraj/list/top-75-highest-rated-australian-narrative-1/"},
         {"url": "https://letterboxd.com/bigbadraj/list/the-top-250-highest-rated-films-of-90-minutes/"},
         {"url": "https://letterboxd.com/bigbadraj/list/the-top-250-highest-rated-films-of-120-minutes/"},
         {"url": "https://letterboxd.com/bigbadraj/list/the-top-150-highest-rated-films-of-180-minutes/"},
