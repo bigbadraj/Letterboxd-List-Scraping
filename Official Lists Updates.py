@@ -4,7 +4,8 @@ Scrape two official runtime Letterboxd lists in list order, trim CSV backups to
 
 The CSV is treated as the *current* list; the website scrape may lag (e.g. last
 week’s order). *In* = films in the CSV but not on the scraped page; *Out* = films
-on the scraped page but not in the CSV. HTML is written to the stats .txt files.
+on the scraped page but not in the CSV. HTML stats and linked plain-style
+comment .txt files are written to Outputs.
 """
 from __future__ import annotations
 
@@ -16,6 +17,9 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date
 from time import sleep
 from typing import List, Optional, Sequence, Tuple
+
+# title, rank, film path (/film/slug/)
+FilmChange = Tuple[str, int, str]
 from urllib.parse import urlparse
 
 import requests
@@ -23,17 +27,19 @@ from bs4 import BeautifulSoup
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
-# (list url, csv filename, stats output filename)
-LISTS: Sequence[Tuple[str, str, str]] = (
+# (list url, csv filename, stats .txt, comment .txt)
+LISTS: Sequence[Tuple[str, str, str, str]] = (
     (
         "https://letterboxd.com/bigbadraj/list/top-250-films-of-more-than-150-minutes/",
         "150_Minutes_or_More_top_movies.csv",
         "150_Minutes_or_More_top_movies_stats.txt",
+        "150_Minutes_or_More_top_movies_comment.txt",
     ),
     (
         "https://letterboxd.com/bigbadraj/list/top-250-narrative-films-of-less-than-100/",
         "100_Minutes_or_Less_top_movies.csv",
         "100_Minutes_or_Less_top_movies_stats.txt",
+        "100_Minutes_or_Less_top_movies_comment.txt",
     ),
 )
 
@@ -114,6 +120,18 @@ def normalize_film_path(href: Optional[str]) -> str:
         href = "/" + href
     href = href.split("?")[0].rstrip("/") + "/"
     return href
+
+
+def path_to_letterboxd_url(path: str) -> str:
+    if not path:
+        return "https://letterboxd.com/"
+    p = path if path.startswith("/") else "/" + path
+    return "https://letterboxd.com" + p.rstrip("/") + "/"
+
+
+def list_updated_date_phrase(as_of: date) -> str:
+    """e.g. April 3, 2026 (no ordinal on day)."""
+    return f"{as_of.strftime('%B')} {as_of.day}, {as_of.year}"
 
 
 def collect_ordered_paths(session: requests.Session, base_url: str, max_films: int) -> List[str]:
@@ -242,7 +260,7 @@ def diff_csv_current_vs_stale_scrape(
     csv_paths: Sequence[str],
     csv_titles: Sequence[str],
     scrape_paths: Sequence[str],
-) -> Tuple[List[Tuple[str, int]], List[Tuple[str, int]]]:
+) -> Tuple[List[FilmChange], List[FilmChange]]:
     """CSV = up-to-date list; scrape = older site state (order may lag).
 
     *In* — in the CSV but not on the scraped list: csv_paths − scrape_paths.
@@ -254,43 +272,84 @@ def diff_csv_current_vs_stale_scrape(
     scrape_set = set(scrape_paths)
     csv_set = set(csv_paths)
 
-    additions: List[Tuple[str, int]] = []
+    additions: List[FilmChange] = []
     for i, p in enumerate(csv_paths, start=1):
         if p and p not in scrape_set:
-            additions.append((csv_titles[i - 1], i))
+            additions.append((csv_titles[i - 1], i, p))
 
     pending: List[Tuple[int, str]] = [
         (i, p) for i, p in enumerate(scrape_paths, start=1) if p and p not in csv_set
     ]
-    removals: List[Tuple[str, int]] = []
+    removals: List[FilmChange] = []
     if pending:
         meta = fetch_metadata_parallel([p for _, p in pending])
-        for (rank, _), (title, _) in zip(pending, meta):
-            removals.append((title, rank))
+        for (rank, path), (title, _) in zip(pending, meta):
+            removals.append((title, rank, path))
 
     return additions, removals
 
 
-def format_change_lines(items: Sequence[Tuple[str, int]], kind: str) -> str:
+def format_change_lines(items: Sequence[FilmChange], kind: str) -> str:
     """kind: 'in' uses one <i> per title; 'out' matches Letterboxd-style single <i> block."""
     if not items:
         return ""
     if kind == "out":
         inner = "<br>".join(
-            f"{html.escape(title)} (was&nbsp;#{rank})" for title, rank in items
+            f"{html.escape(title)} (was&nbsp;#{rank})" for title, rank, _ in items
         )
         return f"<i>{inner}</i>"
     parts = []
-    for title, rank in items:
+    for title, rank, _ in items:
         safe = html.escape(title)
         parts.append(f"<i>{safe} (at&nbsp;#{rank})</i>")
     return "<br>".join(parts)
 
 
+def comment_txt_linked(
+    as_of: date,
+    additions: Sequence[FilmChange],
+    removals: Sequence[FilmChange],
+) -> str:
+    """Plain layout with HTML links on film titles (Letterboxd comment style)."""
+    if not additions and not removals:
+        return (
+            f"List updated {list_updated_date_phrase(as_of)}:\n\n"
+            "No changes since the last update.\n"
+        )
+
+    lines: List[str] = [
+        f"List updated {list_updated_date_phrase(as_of)}:",
+        "",
+        "In:",
+    ]
+    if additions:
+        for title, rank, path in additions:
+            url = path_to_letterboxd_url(path)
+            lines.append(
+                f"· <a href=\"{html.escape(url, quote=True)}\" rel=\"nofollow\">"
+                f"{html.escape(title)}</a> (#{rank})"
+            )
+    else:
+        lines.append("—")
+    lines.extend(["", "Out:"])
+    if removals:
+        n = len(removals)
+        for i, (title, rank, path) in enumerate(removals):
+            url = path_to_letterboxd_url(path)
+            end = "." if i == n - 1 else ""
+            lines.append(
+                f"· <a href=\"{html.escape(url, quote=True)}\" rel=\"nofollow\">"
+                f"{html.escape(title)}</a> (#{rank}){end}"
+            )
+    else:
+        lines.append("—")
+    return "\n".join(lines) + "\n"
+
+
 def blockquote_html(
     as_of: date,
-    additions: List[Tuple[str, int]],
-    removals: List[Tuple[str, int]],
+    additions: List[FilmChange],
+    removals: List[FilmChange],
 ) -> str:
     in_block = format_change_lines(additions, "in")
     out_block = format_change_lines(removals, "out")
@@ -318,7 +377,7 @@ def run() -> str:
     chunks: List[str] = []
     as_of = date.today()
 
-    for base_url, csv_name, stats_name in LISTS:
+    for base_url, csv_name, stats_name, comment_name in LISTS:
         csv_path = os.path.join(OUTPUT_DIR, csv_name)
         if not os.path.isfile(csv_path):
             raise FileNotFoundError(f"Missing CSV: {csv_path}")
@@ -339,9 +398,13 @@ def run() -> str:
         with open(stats_path, "w", encoding="utf-8", newline="") as out:
             out.write(block + "\n")
 
+        comment_path = os.path.join(OUTPUT_DIR, comment_name)
+        with open(comment_path, "w", encoding="utf-8", newline="") as out:
+            out.write(comment_txt_linked(as_of, additions, removals))
+
     return "\n\n".join(chunks)
 
 
 if __name__ == "__main__":
     run()
-    print("Stats outputs created.")
+    print("Stats and comment .txt files created.")
