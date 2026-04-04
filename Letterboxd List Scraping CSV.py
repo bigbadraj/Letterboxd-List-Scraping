@@ -71,9 +71,21 @@ def create_session():
     })
     return session
 
+def film_url_to_absolute(film_url):
+    """Build full Letterboxd film URL from path or absolute URL."""
+    if not film_url:
+        return ''
+    if film_url.startswith('http://') or film_url.startswith('https://'):
+        return film_url
+    if film_url.startswith('/'):
+        return f'https://letterboxd.com{film_url}'
+    return f'https://letterboxd.com/{film_url.lstrip("/")}'
+
+
 def process_film(session, film_url, movies_data):
     try:
-        film_response = session.get(f"https://letterboxd.com{film_url}", timeout=10)
+        link = film_url_to_absolute(film_url)
+        film_response = session.get(link, timeout=10)
         film_response.raise_for_status()
         film_soup = BeautifulSoup(film_response.content, 'html.parser')
         
@@ -88,7 +100,12 @@ def process_film(session, film_url, movies_data):
             else:
                 title = title_text
             
-            movies_data.append({'Title': title, 'Year': year})
+            movies_data.append({
+                'Title': title,
+                'Year': year,
+                'Blank': '',
+                'Link': link,
+            })
             
             if len(movies_data) % 10 == 0:
                 print(f'Scraped {len(movies_data)} titles. Latest: {title}')
@@ -170,7 +187,10 @@ def main():
             
         page += 1
     
-    df = pd.DataFrame(movies_data.items)
+    df = pd.DataFrame(
+        movies_data.items,
+        columns=['Title', 'Year', 'tmdbID', 'Link'],
+    )
     output_csv = os.path.join(output_dir, 'csv_film_titles.csv')
     df.to_csv(output_csv, index=False)
     print(f"\nScraping complete. {len(movies_data)} films saved to {output_csv}")
