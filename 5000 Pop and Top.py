@@ -1,4 +1,3 @@
-# Import necessary libraries (Chrome + undetected-chromedriver to reduce Cloudflare/captcha blocks)
 import time
 import random
 import undetected_chromedriver as uc
@@ -309,6 +308,28 @@ class RequestsSession:
 
 def normalize_text(text):
     return unicodedata.normalize('NFKC', str(text)).strip()
+
+
+def masthead_title_from_driver(driver) -> Optional[str]:
+    """
+    Canonical film title from the Letterboxd film page masthead (h1.primaryname).
+    Prefer over URL slugs / browse-list attributes when not using whitelist sheet titles.
+    """
+    try:
+        h1 = driver.find_element(
+            By.CSS_SELECTOR,
+            "section.production-masthead h1.headline-1.primaryname",
+        )
+        try:
+            raw = h1.find_element(By.CSS_SELECTOR, "span.name").text
+        except Exception:
+            raw = h1.text
+        if not raw or not str(raw).strip():
+            return None
+        return normalize_text(str(raw).replace("\xa0", " "))
+    except Exception:
+        return None
+
 
 class MovieProcessor:
     def __init__(self):
@@ -2217,8 +2238,10 @@ class LetterboxdScraper:
                             self.rejected_movies_count += 1
                             break
                         
-                        # Fill in title and URL
-                        movie_data['Title'] = film_title
+                        # Canonical title from film page masthead (non-whitelist path only; whitelist uses sheet title in process_movie_data)
+                        masthead_title = masthead_title_from_driver(self.driver)
+                        display_title = masthead_title if masthead_title else film_title
+                        movie_data['Title'] = display_title
                         movie_data['Link'] = film_url
                         
                         # Use extracted release_year if we have it
@@ -2262,7 +2285,7 @@ class LetterboxdScraper:
                         
                         # If we get here, the movie passed all checks
                         # Process the movie data (with all extracted data cached)
-                        self.process_movie_data(movie_data, film_title, film_url)
+                        self.process_movie_data(movie_data, display_title, film_url)
                         # Check again after processing
                         if self.valid_movies_count >= MAX_MOVIES:
                             print_to_csv(f"✅ {MAX_MOVIES} unique movies successfully scraped. Stopping scraping.")

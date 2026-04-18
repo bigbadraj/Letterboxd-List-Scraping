@@ -144,6 +144,28 @@ class RequestsSession:
 def normalize_text(text):
     return unicodedata.normalize('NFKC', str(text)).strip()
 
+
+def masthead_title_from_driver(driver) -> Optional[str]:
+    """
+    Canonical film title from the Letterboxd film page masthead (h1.primaryname).
+    Prefer over URL slugs / browse-list attributes when not using whitelist sheet titles.
+    """
+    try:
+        h1 = driver.find_element(
+            By.CSS_SELECTOR,
+            "section.production-masthead h1.headline-1.primaryname",
+        )
+        try:
+            raw = h1.find_element(By.CSS_SELECTOR, "span.name").text
+        except Exception:
+            raw = h1.text
+        if not raw or not str(raw).strip():
+            return None
+        return normalize_text(str(raw).replace("\xa0", " "))
+    except Exception:
+        return None
+
+
 class MovieProcessor:
     def __init__(self):
         self.session = RequestsSession()
@@ -1341,6 +1363,8 @@ class LetterboxdScraper:
                         if meta_tag:
                             release_year_content = meta_tag.get_attribute('content')
                             release_year = release_year_content.split('(')[-1].strip(')')
+                        masthead_title = masthead_title_from_driver(self.driver)
+                        display_title = masthead_title if masthead_title else film_title
                         # Extract TMDB ID from body tag
                         tmdb_id = None
                         try:
@@ -1379,7 +1403,7 @@ class LetterboxdScraper:
                         # If we get here, the movie passed all checks
                         # Create movie data dictionary
                         movie_data = {
-                            'Title': film_title,
+                            'Title': display_title,
                             'Year': release_year,
                             'tmdbID': tmdb_id,
                             'MPAA': None,  # We don't need MPAA for processing
@@ -1395,7 +1419,7 @@ class LetterboxdScraper:
                             'Link': film_url
                         }
                         # Process the movie data
-                        self.process_movie_data(movie_data, film_title, film_url)
+                        self.process_movie_data(movie_data, display_title, film_url)
                         break  # Break out of retry loop since we successfully processed the movie
                     except Exception as e:
                         if retry == movie_retries - 1:

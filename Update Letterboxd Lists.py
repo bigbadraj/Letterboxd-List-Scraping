@@ -147,7 +147,7 @@ def update_letterboxd_lists():
         "europe_top_movies": "https://letterboxd.com/bigbadraj/list/top-250-highest-rated-european-narrative/edit/",
         "asia_top_movies": "https://letterboxd.com/bigbadraj/list/top-250-highest-rated-asian-narrative-feature/edit/",
         "africa_top_movies": "https://letterboxd.com/bigbadraj/list/top-100-highest-rated-african-narrative-feature/edit/",
-        "oceania_top_movies": "https://letterboxd.com/bigbadraj/list/top-75-highest-rated-australian-narrative-1/",
+        "oceania_top_movies": "https://letterboxd.com/bigbadraj/list/top-75-highest-rated-australian-narrative-1/edit/",
         "90_Minutes_or_Less_top_movies": "https://letterboxd.com/bigbadraj/list/the-top-250-highest-rated-films-of-90-minutes/edit/",
         "2_Hours_or_Less_top_movies": "https://letterboxd.com/bigbadraj/list/the-top-250-highest-rated-films-of-120-minutes/edit/",
         "3_Hours_or_Greater_top_movies": "https://letterboxd.com/bigbadraj/list/the-top-150-highest-rated-films-of-180-minutes/edit/",
