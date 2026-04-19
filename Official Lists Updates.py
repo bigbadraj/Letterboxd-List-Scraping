@@ -4,8 +4,9 @@ Scrape two official runtime Letterboxd lists in list order, trim CSV backups to
 
 The CSV is treated as the *current* list; the website scrape may lag (e.g. last
 week’s order). *In* = films in the CSV but not on the scraped page; *Out* = films
-on the scraped page but not in the CSV. HTML stats and linked plain-style
-comment .txt files are written to Outputs.
+on the scraped page but not in the CSV. Stats .txt files are full HTML blurbs
+(list-specific intro, eligibility, footer) with a dynamic blockquote for changes;
+linked plain-style comment .txt files are written to Outputs.
 """
 from __future__ import annotations
 
@@ -27,19 +28,21 @@ from bs4 import BeautifulSoup
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
-# (list url, csv filename, stats .txt, comment .txt)
-LISTS: Sequence[Tuple[str, str, str, str]] = (
+# (list url, csv filename, stats .txt, comment .txt, stats template key)
+LISTS: Sequence[Tuple[str, str, str, str, str]] = (
     (
-        "https://letterboxd.com/bigbadraj/list/top-250-films-of-more-than-150-minutes/",
+        "https://letterboxd.com/official/list/top-250-films-above-150-minutes-in-runtime/",
         "150_Minutes_or_More_top_movies.csv",
         "150_Minutes_or_More_top_movies_stats.txt",
         "150_Minutes_or_More_top_movies_comment.txt",
+        "above_150",
     ),
     (
-        "https://letterboxd.com/bigbadraj/list/top-250-narrative-films-of-less-than-100/",
+        "https://letterboxd.com/official/list/top-250-films-below-100-minutes-in-runtime/",
         "100_Minutes_or_Less_top_movies.csv",
         "100_Minutes_or_Less_top_movies_stats.txt",
         "100_Minutes_or_Less_top_movies_comment.txt",
+        "below_100",
     ),
 )
 
@@ -346,6 +349,58 @@ def comment_txt_linked(
     return "\n".join(lines) + "\n"
 
 
+_STATS_FOOTER = (
+    "<b><a href=\"https://boxd.it/2l6d\">Official Lists HQ Directory</a></b> | "
+    "<a href=\"https://letterboxd.com/official/tag/runtime/lists/\">Runtime Lists</a> | "
+    "<a href=\"https://letterboxd.com/official/tag/raj-thecat/lists/\">Lists by Raj Thecat</a>"
+)
+
+
+def stats_html_full(
+    template_key: str,
+    as_of: date,
+    additions: List[FilmChange],
+    removals: List[FilmChange],
+) -> str:
+    """Letterboxd-ready stats blurb; only the blockquote body varies with diffs."""
+    as_of_phrase = list_updated_date_phrase(as_of)
+    intro = (
+        f"As of {as_of_phrase}. Curated by <a href=\"https://boxd.it/8XQUh\">Raj Thecat</a>, "
+        f"extracted from <a href=\"https://letterboxd.com/films/by/rating/\">here</a>. "
+    )
+    if template_key == "above_150":
+        intro += (
+            "This list ranks narrative feature films above 150 minutes in runtime "
+            "by average member rating."
+        )
+        eligibility = (
+            "<b>Eligibility rules:</b>\n"
+            "•\xa0There is a 5,000 minimum ratings threshold.\n"
+            "•\xa0Films must be feature-length and above 150 minutes long with a festival premiere, "
+            "theatrical distribution or professional streaming release.\n"
+            "•\xa0This list excludes: documentaries of any kind, self-released web videos, DTV films, "
+            "recap or recut films, theatre or stage shows, TV series or TV movies, specials or episodes."
+        )
+    elif template_key == "below_100":
+        intro += (
+            "This list ranks narrative feature films below 100 minutes in runtime "
+            "by average member rating."
+        )
+        eligibility = (
+            "<b>Eligibility rules:</b>\n"
+            "•\xa0There is a 5,000 minimum ratings threshold.\n"
+            "•\xa0Films must be feature-length (more than 40 minutes long, but below 100 minutes long) "
+            "with a festival premiere, theatrical distribution or professional streaming release.\n"
+            "•\xa0This list excludes: documentaries of any kind, self-released web videos, DTV films, "
+            "recap or recut films, theatre or stage shows, TV series or TV movies, specials or episodes."
+        )
+    else:
+        raise ValueError(f"Unknown stats template: {template_key!r}")
+
+    block = blockquote_html(as_of, additions, removals)
+    return "\n\n".join([intro, block, eligibility, _STATS_FOOTER]) + "\n"
+
+
 def blockquote_html(
     as_of: date,
     additions: List[FilmChange],
@@ -377,7 +432,7 @@ def run() -> str:
     chunks: List[str] = []
     as_of = date.today()
 
-    for base_url, csv_name, stats_name, comment_name in LISTS:
+    for base_url, csv_name, stats_name, comment_name, stats_template in LISTS:
         csv_path = os.path.join(OUTPUT_DIR, csv_name)
         if not os.path.isfile(csv_path):
             raise FileNotFoundError(f"Missing CSV: {csv_path}")
@@ -396,7 +451,7 @@ def run() -> str:
 
         stats_path = os.path.join(OUTPUT_DIR, stats_name)
         with open(stats_path, "w", encoding="utf-8", newline="") as out:
-            out.write(block + "\n")
+            out.write(stats_html_full(stats_template, as_of, additions, removals))
 
         comment_path = os.path.join(OUTPUT_DIR, comment_name)
         with open(comment_path, "w", encoding="utf-8", newline="") as out:

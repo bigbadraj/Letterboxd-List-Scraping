@@ -135,8 +135,8 @@ def setup_webdriver():
         "safebrowsing.enabled": True,
     }
     options.add_experimental_option("prefs", prefs)
-    # version_main must match your installed Chrome major version (e.g. 145); adjust if you update Chrome
-    driver = uc.Chrome(options=options, use_subprocess=True, version_main=145)
+    # Omit version_main so undetected-chromedriver matches your installed Chrome (avoids mismatch after updates).
+    driver = uc.Chrome(options=options, use_subprocess=True)
     return driver
 
 

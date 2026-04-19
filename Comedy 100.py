@@ -83,8 +83,8 @@ def setup_webdriver():
         options.add_argument(f"--user-data-dir={CHROME_USER_DATA_DIR}")
         if CHROME_PROFILE_DIR:
             options.add_argument(f"--profile-directory={CHROME_PROFILE_DIR}")
-    # version_main must match your installed Chrome major version (e.g. 145); adjust if you update Chrome
-    driver = uc.Chrome(options=options, use_subprocess=True, version_main=145)
+    # Omit version_main so undetected-chromedriver matches your installed Chrome (avoids mismatch after updates).
+    driver = uc.Chrome(options=options, use_subprocess=True)
     return driver
 
 

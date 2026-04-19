@@ -93,6 +93,7 @@ MAX_MOVIES = 250
 # Configure settings
 MIN_RATING_COUNT = 1000
 MIN_RUNTIME = 40
+EXPECTED_LISTING_POSTERS_PER_PAGE = 72
 MAX_RETRIES = 25
 RETRY_DELAY = 15
 CHUNK_SIZE = 1900
@@ -164,6 +165,23 @@ def masthead_title_from_driver(driver) -> Optional[str]:
         return normalize_text(str(raw).replace("\xa0", " "))
     except Exception:
         return None
+
+
+def extract_rating_count_from_film_page(driver) -> Optional[int]:
+    """Rating count only from loaded film HTML (no masthead / tabs). Same pattern as 5000 Pop and Top."""
+    try:
+        m = re.search(r'ratingCount":(\d+)', driver.page_source)
+        if m:
+            return int(m.group(1))
+    except Exception:
+        pass
+    return None
+
+
+def og_release_year_from_page_source(page_source: str) -> Optional[str]:
+    """Parse release year from og:title meta in raw HTML (avoids Selenium for zero-review fast path)."""
+    m = re.search(r'property="og:title"\s+content="[^"]*\((\d{4})\)"', page_source)
+    return m.group(1) if m else None
 
 
 class MovieProcessor:
@@ -689,8 +707,8 @@ def setup_webdriver():
         "safebrowsing.enabled": True,
     }
     options.add_experimental_option("prefs", prefs)
-    # version_main must match your installed Chrome major version (e.g. 145); adjust if you update Chrome
-    driver = uc.Chrome(options=options, use_subprocess=True, version_main=145)
+    # Omit version_main so undetected-chromedriver matches your installed Chrome (avoids mismatch after updates).
+    driver = uc.Chrome(options=options, use_subprocess=True)
     return driver
 
 def format_time(seconds):
@@ -863,7 +881,80 @@ class LetterboxdScraper:
         self.start_time = time.time()
         self.top_movies_count = 0  # Track the number of movies added to the top genre list
         self.rejected_movies_count = 0  # Add counter for rejected movies
+        self._listing_last_url_prev_page: Optional[str] = None
         print_to_csv("Initialized Letterboxd Scraper.")
+
+    @staticmethod
+    def _normalize_listing_film_url(film_url: Optional[str]) -> str:
+        if not film_url:
+            return ""
+        u = film_url.split("?")[0].rstrip("/").lower()
+        if "/film/" in u:
+            return u.split("/film/", 1)[1].strip("/")
+        return u
+
+    def _build_film_data_list_from_containers(self, film_containers) -> List[dict]:
+        film_data_list: List[dict] = []
+        for container in film_containers:
+            try:
+                anchor = container.find_element(By.CSS_SELECTOR, 'a[href*="/film/"]')
+                film_url = anchor.get_attribute('href')
+                film_title = None
+                film_title = container.get_attribute('data-item-full-display-name')
+                if not film_title:
+                    film_title = container.get_attribute('data-item-name')
+                    if film_title:
+                        full_name = container.get_attribute('data-item-full-display-name')
+                        if full_name and '(' in full_name and ')' in full_name:
+                            film_title = full_name
+                if not film_title:
+                    anchor_title = anchor.get_attribute('title')
+                    if anchor_title:
+                        title_parts = anchor_title.split(' ')
+                        if len(title_parts) > 1 and title_parts[-1].replace('.', '').replace(',', '').isdigit():
+                            film_title = ' '.join(title_parts[:-1])
+                        else:
+                            film_title = anchor_title
+                if not film_title:
+                    try:
+                        img = container.find_element(By.CSS_SELECTOR, 'img')
+                        img_alt = img.get_attribute('alt')
+                        if img_alt and 'poster' not in img_alt.lower():
+                            film_title = img_alt.replace(' poster', '').strip()
+                    except Exception:
+                        pass
+                if not film_title and film_url:
+                    url_parts = film_url.split('/film/')
+                    if len(url_parts) > 1:
+                        title_from_url = url_parts[1].rstrip('/')
+                        film_title = title_from_url.replace('-', ' ').replace('_', ' ').title()
+                if film_title and film_url:
+                    film_title = film_title.strip()
+                    release_year = None
+                    if '(' in film_title and ')' in film_title:
+                        release_year = film_title.split('(')[-1].split(')')[0].strip()
+                    is_blacklisted = self.processor.is_blacklisted(None, None, film_url, None)
+                    film_data_list.append({
+                        'title': film_title,
+                        'url': film_url,
+                        'is_blacklisted': is_blacklisted,
+                        'release_year': release_year
+                    })
+                else:
+                    print_to_csv(f"Missing data for movie - Title: {film_title}, URL: {film_url}")
+                    try:
+                        debug_info = (
+                            f"Available data: data-item-full-display-name='{container.get_attribute('data-item-full-display-name')}', "
+                            f"data-item-name='{container.get_attribute('data-item-name')}', anchor-title='{anchor.get_attribute('title')}'"
+                        )
+                        print_to_csv(f"   Debug: {debug_info}")
+                    except Exception:
+                        pass
+                    self.processor.rejected_data.append([film_title, None, None, 'Missing title or URL'])
+            except Exception as e:
+                print_to_csv(f"Error collecting film data: {str(e)}")
+                continue
+        return film_data_list
 
     def process_movie_data(self, info, film_title=None, film_url=None):
         """Process movie data from the whitelist using URL as the primary identifier."""
@@ -1065,6 +1156,227 @@ class LetterboxdScraper:
             print_to_csv(f"Error details: {e.__dict__ if hasattr(e, '__dict__') else 'No details available'}")
             return False
 
+    def _process_one_genre_listing_film(self, film_data: dict, seen_titles: set) -> bool:
+        """Process one browse-row film. Returns True if the outer scrape should stop (MAX_MOVIES reached)."""
+        if self.valid_movies_count >= MAX_MOVIES:
+            print_to_csv(f"\nReached the target of {MAX_MOVIES} successful movies. Stopping scraping.")
+            return True
+
+        film_title = film_data['title']
+        film_url = film_data['url']
+        release_year = film_data['release_year']
+        whitelist_info, _ = self.processor.get_whitelist_data(None, None, film_url)
+        seen_titles.add(film_title.lower())
+        self.total_titles += 1
+
+        if self.processor.is_zero_reviews(film_title, release_year, film_url):
+            print_to_csv(f"📊 {film_title} is in zero reviews list. Skipping.")
+            self.processor.rejected_data.append([film_title, release_year, None, 'Zero reviews'])
+            self.rejected_movies_count += 1
+            return False
+
+        if film_data['is_blacklisted']:
+            print_to_csv(f"❌ {film_title} was not added due to being blacklisted.")
+            self.processor.rejected_data.append([film_title, release_year, None, 'Blacklisted'])
+            self.rejected_movies_count += 1
+            return False
+
+        if any(movie['Link'] == film_url for movie in MAX_MOVIES_stats['film_data']):
+            print_to_csv(f"⚠️ {film_title} was already processed in this session. Skipping.")
+            return False
+
+        if whitelist_info:
+            self.process_movie_data(whitelist_info, film_title, film_url)
+            return False
+
+        movie_retries = 20
+        for retry in range(movie_retries):
+            try:
+                self.driver.get(film_url)
+                try:
+                    page_title = self.driver.title
+                    if "not found" in page_title.lower() or "error" in page_title.lower():
+                        print_to_csv(f"⚠️ Movie page appears to be an error page: {page_title}")
+                        break
+                except Exception:
+                    pass
+
+                page_source = self.driver.page_source
+                rating_quick = extract_rating_count_from_film_page(self.driver)
+                if rating_quick == 0:
+                    yr = release_year or og_release_year_from_page_source(page_source)
+                    print_to_csv(f"📊 {film_title} has no reviews. Adding to zero reviews list.")
+                    self.processor.add_to_zero_reviews(film_title, yr, film_url)
+                    self.processor.rejected_data.append([film_title, yr, None, 'Zero reviews'])
+                    self.rejected_movies_count += 1
+                    break
+                if rating_quick is not None and rating_quick < MIN_RATING_COUNT:
+                    print_to_csv(f"❌ {film_title} was not added due to insufficient ratings: {rating_quick} ratings.")
+                    self.processor.rejected_data.append([film_title, release_year, None, 'Insufficient ratings (< 1000)'])
+                    self.rejected_movies_count += 1
+                    break
+
+                match = re.search(r'ratingCount":(\d+)', page_source)
+                rating_count = int(match.group(1)) if match else (rating_quick or 0)
+                if rating_count == 0:
+                    yr = release_year or og_release_year_from_page_source(page_source)
+                    print_to_csv(f"📊 {film_title} has no reviews. Adding to zero reviews list.")
+                    self.processor.add_to_zero_reviews(film_title, yr, film_url)
+                    self.processor.rejected_data.append([film_title, yr, None, 'Zero reviews'])
+                    self.rejected_movies_count += 1
+                    break
+                if rating_count < MIN_RATING_COUNT:
+                    print_to_csv(f"❌ {film_title} was not added due to insufficient ratings: {rating_count} ratings.")
+                    self.processor.rejected_data.append([film_title, release_year, None, 'Insufficient ratings (< 1000)'])
+                    self.rejected_movies_count += 1
+                    break
+
+                WebDriverWait(self.driver, 10).until(
+                    EC.presence_of_element_located((By.CSS_SELECTOR, 'meta[property=\"og:title\"]'))
+                )
+                meta_tag = self.driver.find_element(By.CSS_SELECTOR, 'meta[property="og:title"]')
+                release_year = None
+                if meta_tag:
+                    release_year_content = meta_tag.get_attribute('content')
+                    release_year = release_year_content.split('(')[-1].strip(')')
+                masthead_title = masthead_title_from_driver(self.driver)
+                display_title = masthead_title if masthead_title else film_title
+                tmdb_id = None
+                try:
+                    tmdb_match = re.search(r'data-tmdb-id="(\d+)"', page_source)
+                    if tmdb_match:
+                        tmdb_id = tmdb_match.group(1)
+                except Exception as e:
+                    print_to_csv(f"Error extracting TMDB ID: {str(e)}")
+                runtime = None
+                try:
+                    runtime_element = WebDriverWait(self.driver, 10).until(
+                        EC.presence_of_element_located((By.CSS_SELECTOR, 'p.text-link.text-footer'))
+                    )
+                    runtime_text = runtime_element.text
+                    rm = re.search(r'(\d+)\s*min(?:s)?', runtime_text)
+                    if rm:
+                        runtime = int(rm.group(1))
+                        if runtime < MIN_RUNTIME:
+                            print_to_csv(f"❌ {film_title} was not added due to insufficient runtime: {runtime} minutes.")
+                            self.processor.rejected_data.append([film_title, release_year, None, 'Insufficient runtime (< 40 minutes)'])
+                            self.processor.add_to_blacklist(film_title, release_year, 'Insufficient runtime (< 40 minutes)', film_url)
+                            self.rejected_movies_count += 1
+                            break
+                except Exception as e:
+                    runtime = None
+                    print_to_csv(f"Error extracting runtime for {film_title}: {str(e)}")
+                if runtime is None:
+                    print_to_csv(f"⚠️ {film_title} skipped due to missing runtime")
+                    self.rejected_movies_count += 1
+                    if retry < movie_retries - 1:
+                        print_to_csv(f"Retrying... (Attempt {retry + 1}/{movie_retries})")
+                        time.sleep(2)
+                        continue
+                    break
+                movie_data = {
+                    'Title': display_title,
+                    'Year': release_year,
+                    'tmdbID': tmdb_id,
+                    'MPAA': None,
+                    'Runtime': runtime,
+                    'RatingCount': rating_count,
+                    'Languages': [],
+                    'Countries': [],
+                    'Decade': (int(release_year) // 10) * 10 if release_year else None,
+                    'Directors': [],
+                    'Genres': [],
+                    'Studios': [],
+                    'Actors': [],
+                    'Link': film_url
+                }
+                self.process_movie_data(movie_data, display_title, film_url)
+                break
+            except Exception as e:
+                if retry == movie_retries - 1:
+                    print_to_csv(f"❌ Failed to process movie after {movie_retries} attempts: {str(e)}")
+                    self.processor.rejected_data.append([film_title, release_year, None, f'Error: {str(e)}'])
+                    self.rejected_movies_count += 1
+                    break
+                else:
+                    print_to_csv(f"Retry {retry + 1}/{movie_retries} processing movie: {str(e)}")
+                    time.sleep(2)
+                    continue
+        if self.valid_movies_count >= MAX_MOVIES:
+            return True
+        return False
+
+    def _maybe_heal_genre_listing_page_boundary(
+        self, film_data_list: List[dict], page_num: int, listing_url: str, seen_titles: set
+    ) -> Tuple[List[dict], bool]:
+        """Returns (listing rows for current page, stop_entire_scrape)."""
+        if page_num <= 1 or not film_data_list or not self._listing_last_url_prev_page:
+            return film_data_list, False
+        if self._normalize_listing_film_url(film_data_list[0]['url']) != self._normalize_listing_film_url(self._listing_last_url_prev_page):
+            return film_data_list, False
+        print_to_csv(
+            f"🔗 Listing boundary overlap on page {page_num}: reloading pages {page_num - 1} and {page_num} "
+            f"(volatile sort / pagination)."
+        )
+        prev_url = f'{self.base_url}page/{page_num - 1}/'
+        container_retries = 25
+        prev_list: List[dict] = []
+        for retry in range(container_retries):
+            try:
+                self.driver.get(prev_url)
+                WebDriverWait(self.driver, 10).until(
+                    EC.presence_of_all_elements_located((By.CSS_SELECTOR, 'li.posteritem'))
+                )
+                prev_containers = self.driver.find_elements(By.CSS_SELECTOR, 'li.posteritem')
+                n = len(prev_containers)
+                if n == EXPECTED_LISTING_POSTERS_PER_PAGE:
+                    prev_list = self._build_film_data_list_from_containers(prev_containers)
+                    break
+                print_to_csv(
+                    f"⚠️ Boundary heal prev page: expected {EXPECTED_LISTING_POSTERS_PER_PAGE} posters, found {n}; "
+                    f"retry {retry + 1}/{container_retries}"
+                )
+                time.sleep(3)
+                self.driver.get(prev_url)
+                time.sleep(2)
+            except Exception as e:
+                print_to_csv(f"⚠️ Boundary heal load prev page: {e}")
+                time.sleep(3)
+        if len(prev_list) == 0:
+            print_to_csv("⚠️ Boundary heal: could not reload previous page; using original listing.")
+            return film_data_list, False
+        for fd in prev_list:
+            if self._process_one_genre_listing_film(fd, seen_titles):
+                return film_data_list, True
+        if prev_list:
+            self._listing_last_url_prev_page = prev_list[-1]['url']
+        refreshed: List[dict] = []
+        for retry in range(container_retries):
+            try:
+                self.driver.get(listing_url)
+                WebDriverWait(self.driver, 10).until(
+                    EC.presence_of_all_elements_located((By.CSS_SELECTOR, 'li.posteritem'))
+                )
+                cur_containers = self.driver.find_elements(By.CSS_SELECTOR, 'li.posteritem')
+                n = len(cur_containers)
+                if n == EXPECTED_LISTING_POSTERS_PER_PAGE:
+                    refreshed = self._build_film_data_list_from_containers(cur_containers)
+                    break
+                print_to_csv(
+                    f"⚠️ Boundary heal current page: expected {EXPECTED_LISTING_POSTERS_PER_PAGE} posters, found {n}; "
+                    f"retry {retry + 1}/{container_retries}"
+                )
+                time.sleep(3)
+                self.driver.get(listing_url)
+                time.sleep(2)
+            except Exception as e:
+                print_to_csv(f"⚠️ Boundary heal load current page: {e}")
+                time.sleep(3)
+        if not refreshed:
+            print_to_csv("⚠️ Boundary heal: could not reload current page; using original listing.")
+            return film_data_list, False
+        return refreshed, False
+
     def scrape_movies(self):
         seen_titles = set()  # <-- Add this at the start of the method
 
@@ -1125,313 +1437,75 @@ class LetterboxdScraper:
                         time.sleep(10)  # Wait longer for network issues
             
             #time.sleep(random.uniform(1.0, 1.5))
-                    
-            # Find all film containers with retry mechanism
+
             film_containers = []
-            container_retries = 25  # Maximum number of retries
+            container_retries = 25
             for retry in range(container_retries):
                 try:
                     film_containers = WebDriverWait(self.driver, 10).until(
                         EC.presence_of_all_elements_located((By.CSS_SELECTOR, 'li.posteritem'))
                     )
-                    
-                    # Log what we found
-                    print_to_csv(f"Found {len(film_containers)} film containers on attempt {retry + 1}")
-                    
-                    # Check if we have a reasonable number of containers (not necessarily exactly 72)
-                    if len(film_containers) >= 50:  # Allow some flexibility
-                        print_to_csv(f"✅ Found {len(film_containers)} containers, proceeding...")
+                    n = len(film_containers)
+                    print_to_csv(f"Found {n} film containers on attempt {retry + 1}")
+                    if n == EXPECTED_LISTING_POSTERS_PER_PAGE:
+                        print_to_csv(f"✅ Found {n} containers (full page), proceeding...")
                         break
-                    else:
-                        print_to_csv(f"Found only {len(film_containers)} containers, retrying... (Attempt {retry + 1}/{container_retries})")
-                        time.sleep(5)  # Wait longer between retries
-                        self.driver.refresh()  # Refresh the page
-                        time.sleep(2)  # Wait for refresh
+                    print_to_csv(
+                        f"⚠️ Expected exactly {EXPECTED_LISTING_POSTERS_PER_PAGE} posters, found {n}; "
+                        f"reloading listing... (Attempt {retry + 1}/{container_retries})"
+                    )
+                    time.sleep(3)
+                    self.driver.get(url)
+                    WebDriverWait(self.driver, 10).until(
+                        EC.presence_of_element_located((By.CSS_SELECTOR, 'li.posteritem'))
+                    )
+                    time.sleep(2)
                 except Exception as e:
                     if retry == container_retries - 1:
                         print_to_csv(f"❌ Failed to find film containers after {container_retries} attempts: {str(e)}")
-                        print_to_csv(f"Moving to next page and continuing...")
-                        self.page_number += 1
-                        continue
+                        print_to_csv("Moving to next page and continuing...")
+                        film_containers = []
+                        break
                     print_to_csv(f"Retry {retry + 1}/{container_retries} finding film containers: {str(e)}")
                     time.sleep(5)
                     self.driver.refresh()
                     time.sleep(2)
-                    
-                    # Additional error handling for specific issues
                     if "timeout" in str(e).lower():
-                        print_to_csv(f"⚠️ Timeout detected, waiting longer before retry...")
-                        time.sleep(10)  # Wait longer for timeouts
-            
-            if len(film_containers) < 30:  # More flexible threshold
-                print_to_csv(f"❌ Found only {len(film_containers)} film containers, which seems too low")
-                print_to_csv(f"Moving to next page and continuing...")
+                        print_to_csv("⚠️ Timeout detected, waiting longer before retry...")
+                        time.sleep(10)
+
+            n_posters = len(film_containers)
+            if n_posters != EXPECTED_LISTING_POSTERS_PER_PAGE:
+                print_to_csv(
+                    f"❌ After retries, expected exactly {EXPECTED_LISTING_POSTERS_PER_PAGE} posters, "
+                    f"found {n_posters}. Moving to next page..."
+                )
                 self.page_number += 1
                 continue
 
             print_to_csv(f"\n{f' Page {self.page_number} ':=^100}")
 
-            # First collect all film data from the page
-            film_data_list = []
-            for container in film_containers:
-                try:
-                    # Get the anchor element first - look specifically for film links
-                    anchor = container.find_element(By.CSS_SELECTOR, 'a[href*="/film/"]')
-                    film_url = anchor.get_attribute('href')
-                    
-                    # Try multiple methods to get the film title with fallbacks
-                    film_title = None
-                    
-                    # Method 1: Try data-item-full-display-name first (most reliable)
-                    film_title = container.get_attribute('data-item-full-display-name')
-                    
-                    # Method 2: If empty, try data-item-name
-                    if not film_title:
-                        film_title = container.get_attribute('data-item-name')
-                        if film_title:
-                            # Try to get year from data-item-full-display-name if available
-                            full_name = container.get_attribute('data-item-full-display-name')
-                            if full_name and '(' in full_name and ')' in full_name:
-                                film_title = full_name
-                    
-                    # Method 3: If still empty, try anchor title attribute
-                    if not film_title:
-                        anchor_title = anchor.get_attribute('title')
-                        if anchor_title:
-                            # Remove rating from title (e.g., "Barbie 3.75" -> "Barbie")
-                            # Split by space and take everything except the last part if it's a rating
-                            title_parts = anchor_title.split(' ')
-                            if len(title_parts) > 1 and title_parts[-1].replace('.', '').replace(',', '').isdigit():
-                                # Last part is a rating, remove it
-                                film_title = ' '.join(title_parts[:-1])
-                            else:
-                                # No rating, use the full title
-                                film_title = anchor_title
-                    
-                    # Method 4: If still empty, try getting from the img alt attribute
-                    if not film_title:
-                        try:
-                            img = container.find_element(By.CSS_SELECTOR, 'img')
-                            img_alt = img.get_attribute('alt')
-                            if img_alt and 'poster' not in img_alt.lower():
-                                film_title = img_alt.replace(' poster', '').strip()
-                        except:
-                            pass
-                    
-                    # Method 5: Extract from URL as last resort
-                    if not film_title and film_url:
-                        # Extract title from URL: /film/title-name/
-                        url_parts = film_url.split('/film/')
-                        if len(url_parts) > 1:
-                            title_from_url = url_parts[1].rstrip('/')
-                            # Convert hyphens to spaces and capitalize
-                            film_title = title_from_url.replace('-', ' ').replace('_', ' ').title()
-                    
-                    if film_title and film_url:
-                        # Clean up the title
-                        film_title = film_title.strip()
-                        
-                        # Extract year from title if possible
-                        release_year = None
-                        if '(' in film_title and ')' in film_title:
-                            release_year = film_title.split('(')[-1].split(')')[0].strip()
-                        
-                        # Just check if title exists in blacklist, don't try to get release year yet
-                        is_blacklisted = self.processor.is_blacklisted(None, None, film_url, None)  # Pass None as driver
-                        film_data_list.append({
-                            'title': film_title,
-                            'url': film_url,
-                            'is_blacklisted': is_blacklisted,
-                            'release_year': release_year
-                        })
-                    else:
-                        print_to_csv(f"Missing data for movie - Title: {film_title}, URL: {film_url}")
-                        # Debug: show what attributes are available
-                        try:
-                            debug_info = f"Available data: data-item-full-display-name='{container.get_attribute('data-item-full-display-name')}', data-item-name='{container.get_attribute('data-item-name')}', anchor-title='{anchor.get_attribute('title')}'"
-                            print_to_csv(f"   Debug: {debug_info}")
-                        except:
-                            pass
-                        self.processor.rejected_data.append([film_title, None, None, 'Missing title or URL'])
-                except Exception as e:
-                    print_to_csv(f"Error collecting film data: {str(e)}")
-                    continue
-
+            film_data_list = self._build_film_data_list_from_containers(film_containers)
             print_to_csv(f"Collected {len(film_data_list)} movies from page {self.page_number}")
-            
-            # Log some sample titles for debugging
-            if film_data_list:
-                sample_titles = [f"{item['title']} ({item['release_year']})" for item in film_data_list[:3]]
-            
+
             if not film_data_list:
                 print_to_csv("No valid film data collected. Moving to next page...")
                 self.page_number += 1
                 continue
 
-            # Now process each film one by one
+            film_data_list, stop = self._maybe_heal_genre_listing_page_boundary(
+                film_data_list, self.page_number, url, seen_titles
+            )
+            if stop:
+                return
+
             for film_data in film_data_list:
-                if self.valid_movies_count >= MAX_MOVIES:
-                    print_to_csv(f"\nReached the target of {MAX_MOVIES} successful movies. Stopping scraping.")
+                if self._process_one_genre_listing_film(film_data, seen_titles):
                     return
 
-                film_title = film_data['title']
-                film_url = film_data['url']
-                release_year = film_data['release_year']
+            if film_data_list:
+                self._listing_last_url_prev_page = film_data_list[-1]['url']
 
-                # Get whitelist data using URL only
-                whitelist_info, _ = self.processor.get_whitelist_data(None, None, film_url)
-
-                # After processing, add the title to seen_titles for reference only
-                seen_titles.add(film_title.lower())
-
-                # Increment total_titles for each movie we process, including blacklisted ones
-                self.total_titles += 1
-                
-                # Check if movie is in zero reviews list
-                if self.processor.is_zero_reviews(film_title, release_year, film_url):
-                    print_to_csv(f"📊 {film_title} is in zero reviews list. Skipping.")
-                    self.processor.rejected_data.append([film_title, release_year, None, 'Zero reviews'])
-                    self.rejected_movies_count += 1  # Increment rejected counter
-                    continue
-                
-                # Handle blacklisted movies first
-                if film_data['is_blacklisted']:
-                    print_to_csv(f"❌ {film_title} was not added due to being blacklisted.")
-                    self.processor.rejected_data.append([film_title, release_year, None, 'Blacklisted'])
-                    self.rejected_movies_count += 1  # Increment rejected counter
-                    continue
-                
-                # Check if URL has already been processed in this scrape session (duplicate prevention)
-                if any(movie['Link'] == film_url for movie in MAX_MOVIES_stats['film_data']):
-                    print_to_csv(f"⚠️ {film_title} was already processed in this session. Skipping.")
-                    continue
-                
-                # First check for exact matches in whitelist
-                if whitelist_info:
-                    self.process_movie_data(whitelist_info, film_title, film_url)
-                    continue
-                                
-                # Get initial movie data without full scrape
-                movie_retries = 20  # Maximum number of retries for individual movie pages
-                for retry in range(movie_retries):
-                    try:
-                        self.driver.get(film_url)
-                        
-                        # Check if we got redirected to an error page
-                        try:
-                            page_title = self.driver.title
-                            if "not found" in page_title.lower() or "error" in page_title.lower():
-                                print_to_csv(f"⚠️ Movie page appears to be an error page: {page_title}")
-                                break  # Skip to next movie
-                        except:
-                            pass
-                        
-                        # Only wait for the page source to be available, not for any specific element
-                        page_source = self.driver.page_source
-                        # Extract rating count as fast as possible
-                        match = re.search(r'ratingCount":(\d+)', page_source)
-                        rating_count = int(match.group(1)) if match else 0
-
-                        if rating_count == 0:
-                            # Extract title/year if not already known
-                            # Try to get year from meta tag if not in film_data_list
-                            if not release_year:
-                                try:
-                                    meta_tag = self.driver.find_element(By.CSS_SELECTOR, 'meta[property="og:title"]')
-                                    if meta_tag:
-                                        release_year_content = meta_tag.get_attribute('content')
-                                        release_year = release_year_content.split('(')[-1].strip(')')
-                                except Exception:
-                                    release_year = None
-                            print_to_csv(f"📊 {film_title} has no reviews. Adding to zero reviews list.")
-                            self.processor.add_to_zero_reviews(film_title, release_year, film_url)
-                            self.processor.rejected_data.append([film_title, release_year, None, 'Zero reviews'])
-                            self.rejected_movies_count += 1
-                            break  # Skip to next movie
-                        elif rating_count < MIN_RATING_COUNT:
-                            # Not enough reviews, skip immediately
-                            print_to_csv(f"❌ {film_title} was not added due to insufficient ratings: {rating_count} ratings.")
-                            self.processor.rejected_data.append([film_title, release_year, None, 'Insufficient ratings (< 1000)'])
-                            self.rejected_movies_count += 1
-                            break  # Skip to next movie
-                        # If here, rating_count >= 1000, proceed as before
-                        WebDriverWait(self.driver, 10).until(
-                            EC.presence_of_element_located((By.CSS_SELECTOR, 'meta[property=\"og:title\"]'))
-                        )
-                        meta_tag = self.driver.find_element(By.CSS_SELECTOR, 'meta[property="og:title"]')
-                        release_year = None
-                        if meta_tag:
-                            release_year_content = meta_tag.get_attribute('content')
-                            release_year = release_year_content.split('(')[-1].strip(')')
-                        masthead_title = masthead_title_from_driver(self.driver)
-                        display_title = masthead_title if masthead_title else film_title
-                        # Extract TMDB ID from body tag
-                        tmdb_id = None
-                        try:
-                            tmdb_match = re.search(r'data-tmdb-id="(\d+)"', page_source)
-                            if tmdb_match:
-                                tmdb_id = tmdb_match.group(1)
-                        except Exception as e:
-                            print_to_csv(f"Error extracting TMDB ID: {str(e)}")
-                        # Extract runtime
-                        runtime = None
-                        try:
-                            runtime_element = WebDriverWait(self.driver, 10).until(
-                                EC.presence_of_element_located((By.CSS_SELECTOR, 'p.text-link.text-footer'))
-                            )
-                            runtime_text = runtime_element.text
-                            match = re.search(r'(\d+)\s*min(?:s)?', runtime_text)
-                            if match:
-                                runtime = int(match.group(1))
-                                if runtime < MIN_RUNTIME:
-                                    print_to_csv(f"❌ {film_title} was not added due to insufficient runtime: {runtime} minutes.")
-                                    self.processor.rejected_data.append([film_title, release_year, None, 'Insufficient runtime (< 40 minutes)'])
-                                    self.processor.add_to_blacklist(film_title, release_year, 'Insufficient runtime (< 40 minutes)', film_url)
-                                    self.rejected_movies_count += 1
-                                    break  # Skip to next movie
-                        except Exception as e:
-                            runtime = None
-                            print_to_csv(f"Error extracting runtime for {film_title}: {str(e)}")
-                        if runtime is None:
-                            runtime_retries = 5
-                            print_to_csv(f"⚠️ {film_title} skipped due to missing runtime")
-                            self.rejected_movies_count += 1  # Increase rejected movie count
-                            if retry < runtime_retries - 1:
-                                print_to_csv(f"Retrying... (Attempt {retry + 1}/{movie_retries})")
-                                time.sleep(2)
-                                continue
-                        # If we get here, the movie passed all checks
-                        # Create movie data dictionary
-                        movie_data = {
-                            'Title': display_title,
-                            'Year': release_year,
-                            'tmdbID': tmdb_id,
-                            'MPAA': None,  # We don't need MPAA for processing
-                            'Runtime': runtime,
-                            'RatingCount': rating_count,
-                            'Languages': [],
-                            'Countries': [],
-                            'Decade': (int(release_year) // 10) * 10 if release_year else None,
-                            'Directors': [],
-                            'Genres': [],
-                            'Studios': [],
-                            'Actors': [],
-                            'Link': film_url
-                        }
-                        # Process the movie data
-                        self.process_movie_data(movie_data, display_title, film_url)
-                        break  # Break out of retry loop since we successfully processed the movie
-                    except Exception as e:
-                        if retry == movie_retries - 1:
-                            print_to_csv(f"❌ Failed to process movie after {movie_retries} attempts: {str(e)}")
-                            self.processor.rejected_data.append([film_title, release_year, None, f'Error: {str(e)}'])
-                            self.rejected_movies_count += 1  # Increment rejected counter
-                            break  # Skip to next movie
-                        else:
-                            print_to_csv(f"Retry {retry + 1}/{movie_retries} processing movie: {str(e)}")
-                            time.sleep(2)
-                            continue
-            
             self.page_number += 1
 
     def process_approved_movie(self, film_title: str, release_year: str, tmdb_id: str, film_url: str, approval_type: str):
@@ -1457,7 +1531,7 @@ class LetterboxdScraper:
                 self.rejected_movies_count += 1  # Increment rejected counter
                 return
 
-            # Extract rating count
+            # Rating from HTML only first; defer runtime DOM until ratings qualify
             rating_count = 0
             try:
                 match = re.search(r'ratingCount":(\d+)', page_source)
@@ -1466,17 +1540,6 @@ class LetterboxdScraper:
             except Exception as e:
                 print_to_csv(f"Error extracting rating count: {str(e)}")
 
-            # Extract runtime using Selenium
-            runtime = None
-            try:
-                runtime_text = self.driver.find_element(By.CSS_SELECTOR, 'p.text-link.text-footer').text
-                match = re.search(r'(\d+)\s*min(?:s)?', runtime_text)
-                if match:
-                    runtime = int(match.group(1))
-            except Exception:
-                runtime = None
-
-            # Check if movie has zero reviews
             if rating_count == 0:
                 print_to_csv(f"📊 {film_title} has no reviews. Adding to zero reviews list.")
                 self.processor.add_to_zero_reviews(film_title, release_year, film_url)
@@ -1484,12 +1547,20 @@ class LetterboxdScraper:
                 self.rejected_movies_count += 1  # Increment rejected counter
                 return
 
-            # Check minimum rating count
             if rating_count < MIN_RATING_COUNT:
                 print_to_csv(f"❌ {film_title} was not added due to insufficient ratings: {rating_count} ratings.")
                 self.processor.rejected_data.append([film_title, release_year, None, 'Insufficient ratings (< 1000)'])
                 self.rejected_movies_count += 1  # Increment rejected counter
                 return
+
+            runtime = None
+            try:
+                runtime_text = self.driver.find_element(By.CSS_SELECTOR, 'p.text-link.text-footer').text
+                rm = re.search(r'(\d+)\s*min(?:s)?', runtime_text)
+                if rm:
+                    runtime = int(rm.group(1))
+            except Exception:
+                runtime = None
 
             if runtime is None:
                 print_to_csv(f"❌ {film_title} was not added due to missing runtime.")
@@ -1877,6 +1948,7 @@ class LetterboxdScraper:
         self.start_time = time.time()
         self.top_movies_count = 0
         self.rejected_movies_count = 0
+        self._listing_last_url_prev_page = None
         # Reset processor data for new genre/sort type
         self.processor.film_data = []
         self.processor.rejected_data = []
