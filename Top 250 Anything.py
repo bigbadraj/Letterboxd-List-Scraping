@@ -119,6 +119,33 @@ def setup_webdriver():
     """
     Create Chrome driver using undetected-chromedriver, mirroring Genre 250s Chrome setup.
     """
+    def _detect_chrome_major_version():
+        try:
+            import winreg  # type: ignore
+            for hive in (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE):
+                for subkey in (
+                    r"Software\Google\Chrome\BLBeacon",
+                    r"Software\WOW6432Node\Google\Chrome\BLBeacon",
+                ):
+                    try:
+                        k = winreg.OpenKey(hive, subkey)
+                        v, _ = winreg.QueryValueEx(k, "version")
+                        if v:
+                            return int(str(v).split(".", 1)[0])
+                    except Exception:
+                        continue
+        except Exception:
+            pass
+        try:
+            import subprocess
+            out = subprocess.check_output(["chrome", "--version"], stderr=subprocess.STDOUT, text=True)
+            for token in out.split():
+                if token and token[0].isdigit() and "." in token:
+                    return int(token.split(".", 1)[0])
+        except Exception:
+            pass
+        return None
+
     options = uc.ChromeOptions()
     # Prefer normal window (undetected_chromedriver is already less detectable; headless can still be flagged)
     options.add_argument("--start-maximized")
@@ -135,8 +162,11 @@ def setup_webdriver():
         "safebrowsing.enabled": True,
     }
     options.add_experimental_option("prefs", prefs)
-    # Omit version_main so undetected-chromedriver matches your installed Chrome (avoids mismatch after updates).
-    driver = uc.Chrome(options=options, use_subprocess=True)
+    chrome_major = _detect_chrome_major_version()
+    if chrome_major:
+        driver = uc.Chrome(options=options, use_subprocess=True, version_main=chrome_major)
+    else:
+        driver = uc.Chrome(options=options, use_subprocess=True)
     return driver
 
 

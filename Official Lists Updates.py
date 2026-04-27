@@ -28,14 +28,15 @@ from bs4 import BeautifulSoup
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
-# (list url, csv filename, stats .txt, comment .txt, stats template key)
-LISTS: Sequence[Tuple[str, str, str, str, str]] = (
+# (list url, csv filename, stats .txt, comment .txt, stats template key, max films)
+LISTS: Sequence[Tuple[str, str, str, str, str, int]] = (
     (
         "https://letterboxd.com/official/list/top-250-films-above-150-minutes-in-runtime/",
         "150_Minutes_or_More_top_movies.csv",
         "150_Minutes_or_More_top_movies_stats.txt",
         "150_Minutes_or_More_top_movies_comment.txt",
         "above_150",
+        250,
     ),
     (
         "https://letterboxd.com/official/list/top-250-films-below-100-minutes-in-runtime/",
@@ -43,10 +44,18 @@ LISTS: Sequence[Tuple[str, str, str, str, str]] = (
         "100_Minutes_or_Less_top_movies_stats.txt",
         "100_Minutes_or_Less_top_movies_comment.txt",
         "below_100",
+        250,
+    ),
+    (
+        "https://letterboxd.com/bigbadraj/list/top-100-highest-rated-stand-up-comedy-specials/",
+        "aaOfficial_Comedy_100.csv",
+        "aaOfficial_Comedy_100_stats.txt",
+        "aaOfficial_Comedy_100_comment.txt",
+        "comedy_100",
+        100,
     ),
 )
 
-MAX_FILMS = 250
 FETCH_WORKERS = 8
 
 
@@ -349,6 +358,56 @@ def comment_txt_linked(
     return "\n".join(lines) + "\n"
 
 
+def in_out_txt_minimal(
+    additions: Sequence[FilmChange],
+    removals: Sequence[FilmChange],
+) -> str:
+    """Minimal plain text output with only In/Out sections."""
+    lines: List[str] = ["In:"]
+    if additions:
+        for title, rank, _ in additions:
+            lines.append(f"{title} (#{rank})")
+    else:
+        lines.append("—")
+    lines.extend(["", "Out:"])
+    if removals:
+        for title, rank, _ in removals:
+            lines.append(f"{title} (#{rank})")
+    else:
+        lines.append("—")
+    return "\n".join(lines) + "\n"
+
+
+def comment_txt_linked_minimal(
+    additions: Sequence[FilmChange],
+    removals: Sequence[FilmChange],
+) -> str:
+    """Linked comment layout with only In/Out sections."""
+    lines: List[str] = ["In:"]
+    if additions:
+        for title, rank, path in additions:
+            url = path_to_letterboxd_url(path)
+            lines.append(
+                f"· <a href=\"{html.escape(url, quote=True)}\" rel=\"nofollow\">"
+                f"{html.escape(title)}</a> (#{rank})"
+            )
+    else:
+        lines.append("—")
+    lines.extend(["", "Out:"])
+    if removals:
+        n = len(removals)
+        for i, (title, rank, path) in enumerate(removals):
+            url = path_to_letterboxd_url(path)
+            end = "." if i == n - 1 else ""
+            lines.append(
+                f"· <a href=\"{html.escape(url, quote=True)}\" rel=\"nofollow\">"
+                f"{html.escape(title)}</a> (#{rank}){end}"
+            )
+    else:
+        lines.append("—")
+    return "\n".join(lines) + "\n"
+
+
 _STATS_FOOTER = (
     "<b><a href=\"https://boxd.it/2l6d\">Official Lists HQ Directory</a></b> | "
     "<a href=\"https://letterboxd.com/official/tag/runtime/lists/\">Runtime Lists</a> | "
@@ -394,6 +453,8 @@ def stats_html_full(
             "•\xa0This list excludes: documentaries of any kind, self-released web videos, DTV films, "
             "recap or recut films, theatre or stage shows, TV series or TV movies, specials or episodes."
         )
+    elif template_key == "comedy_100":
+        return blockquote_html(as_of, additions, removals) + "\n"
     else:
         raise ValueError(f"Unknown stats template: {template_key!r}")
 
@@ -432,15 +493,15 @@ def run() -> str:
     chunks: List[str] = []
     as_of = date.today()
 
-    for base_url, csv_name, stats_name, comment_name, stats_template in LISTS:
+    for base_url, csv_name, stats_name, comment_name, stats_template, max_films in LISTS:
         csv_path = os.path.join(OUTPUT_DIR, csv_name)
         if not os.path.isfile(csv_path):
             raise FileNotFoundError(f"Missing CSV: {csv_path}")
 
-        trim_csv_to_max_films(csv_path, MAX_FILMS)
+        trim_csv_to_max_films(csv_path, max_films)
         old_rows, fieldnames = load_csv_rows(csv_path)
 
-        scrape_paths = collect_ordered_paths(session, base_url, MAX_FILMS)
+        scrape_paths = collect_ordered_paths(session, base_url, max_films)
         csv_paths, csv_titles = read_snapshot(old_rows, fieldnames)
         additions, removals = diff_csv_current_vs_stale_scrape(
             csv_paths, csv_titles, scrape_paths
@@ -455,7 +516,10 @@ def run() -> str:
 
         comment_path = os.path.join(OUTPUT_DIR, comment_name)
         with open(comment_path, "w", encoding="utf-8", newline="") as out:
-            out.write(comment_txt_linked(as_of, additions, removals))
+            if stats_template == "comedy_100":
+                out.write(comment_txt_linked_minimal(additions, removals))
+            else:
+                out.write(comment_txt_linked(as_of, additions, removals))
 
     return "\n\n".join(chunks)
 

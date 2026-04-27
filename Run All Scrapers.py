@@ -18,6 +18,7 @@ SCRIPTS = [
     ("Genre 250s.py", "Top 250 Genres Scraper"),
     ("Update Letterboxd Lists.py", "Update Lists on Letterboxd"),
     ("Update JSONs.py", "Update Github JSON Files from Letterboxd Lists"),
+    ("Official_Comedy_100.py", "Letterboxd Official Comedy List Scraper"),
 ]
 
 # Detect operating system and set appropriate Python command

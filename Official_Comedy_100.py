@@ -80,7 +80,7 @@ def print_to_csv(message: str):
 
 # Configure locale and constants
 locale.setlocale(locale.LC_ALL, 'en_US.UTF-8')
-MAX_MOVIES = 150
+MAX_MOVIES = 125
 
 # Configure settings
 MIN_RATING_COUNT = 1000
@@ -108,8 +108,8 @@ def extract_rating_count_from_film_page(driver) -> Optional[int]:
 BLACKLIST_PATH = os.path.join(LIST_DIR, 'Comedy_Blacklist.xlsx')
 WHITELIST_PATH = os.path.join(LIST_DIR, 'Comedy_Whitelist.xlsx')
 
-# Comedy_Whitelist.xlsx: Title, Year, Blank (= tmdbID), Link — no Information column.
-_WHITELIST_COLUMNS = ['Title', 'Year', 'Blank', 'Link']
+# Comedy_Whitelist.xlsx: Title, Year, tmdbId, Link.
+_WHITELIST_COLUMNS = ['Title', 'Year', 'tmdbId', 'Link']
 
 
 def normalize_text(text):
@@ -135,6 +135,27 @@ def masthead_title_from_driver(driver) -> Optional[str]:
         return normalize_text(str(raw).replace("\xa0", " "))
     except Exception:
         return None
+
+
+def letterboxd_film_url_key(film_url: Optional[str]) -> str:
+    """
+    Normalize a Letterboxd film URL (or path) into a stable key for matching.
+    Uses the `/film/<slug>/` portion so differences like scheme, trailing slash,
+    casing, or query params don't break whitelist/blacklist matching.
+    """
+    if not film_url:
+        return ""
+    u = str(film_url).strip()
+    if not u:
+        return ""
+    u = u.split("?", 1)[0].rstrip("/").lower()
+    if "/film/" in u:
+        return u.split("/film/", 1)[1].strip("/")
+    if u.startswith("film/"):
+        return u.split("film/", 1)[1].strip("/")
+    if u.startswith("/film/"):
+        return u.split("/film/", 1)[1].strip("/")
+    return u
 
 
 class MovieProcessor:
@@ -221,8 +242,9 @@ class MovieProcessor:
             had_information_column = 'Information' in self.whitelist.columns
             if had_information_column:
                 self.whitelist = self.whitelist.drop(columns=['Information'])
-            if 'Blank' not in self.whitelist.columns:
-                self.whitelist['Blank'] = ''
+            # Whitelist uses tmdbId (never Blank).
+            if 'tmdbId' not in self.whitelist.columns:
+                self.whitelist['tmdbId'] = ''
             if 'Year' not in self.whitelist.columns:
                 self.whitelist['Year'] = ''
             
@@ -231,21 +253,29 @@ class MovieProcessor:
             self.whitelist['Year'] = self.whitelist['Year'].astype(str).str.strip()
             # Fill empty links with empty string instead of None
             self.whitelist['Link'] = self.whitelist['Link'].fillna('')
-            # Keep Blank as-is (user-controlled tmdbID), but normalize NaN to ''
-            self.whitelist['Blank'] = self.whitelist['Blank'].fillna('')
+            # Keep tmdbId as-is (user-controlled TMDB id), but normalize NaN to ''
+            self.whitelist['tmdbId'] = self.whitelist['tmdbId'].fillna('')
             
             # Create a lookup dictionary for faster matching using URLs as keys.
             # Whitelist is authoritative: we do not need to click into the film page for basic output fields.
             self.whitelist_lookup = {}
             for idx, row in self.whitelist.iterrows():
-                if row['Link']:
+                raw_link = row.get('Link', '')
+                raw_link = '' if pd.isna(raw_link) else str(raw_link).strip()
+                if raw_link:
                     info = {
                         'Title': row['Title'] if not pd.isna(row['Title']) else '',
                         'Year': str(row['Year']).strip() if not pd.isna(row['Year']) else '',
-                        # Blank column is tmdbID (string). Keep as-is; downstream writes it to CSV.
-                        'tmdbID': str(row.get('Blank', '')).strip() if not pd.isna(row.get('Blank', '')) else '',
+                        # Whitelist TMDB id comes from tmdbId column only.
+                        'tmdbID': str(row.get('tmdbId', '')).strip()
+                        if not pd.isna(row.get('tmdbId', ''))
+                        else '',
                     }
-                    self.whitelist_lookup[row['Link']] = (info, idx, row['Link'])
+                    # Store under both raw URL/path and normalized film key for robust matching.
+                    self.whitelist_lookup[raw_link] = (info, idx, raw_link)
+                    norm_key = letterboxd_film_url_key(raw_link)
+                    if norm_key and norm_key not in self.whitelist_lookup:
+                        self.whitelist_lookup[norm_key] = (info, idx, raw_link)
 
             if had_information_column:
                 try:
@@ -271,19 +301,23 @@ class MovieProcessor:
         add_to_MAX_MOVIES(info.get('Title'), info.get('Year'), info.get('tmdbID'), film_url, new_entry='')
      
     def update_whitelist(self, film_title: str, release_year: str, movie_data: Dict, film_url: str = None) -> bool:
-        """Update whitelist row by URL (Title/Year only on disk; Blank column left for you). movie_data is in-memory only for callers before reload."""
+        """Update whitelist row by URL (Title/Year only on disk; tmdbId is user-maintained). movie_data is in-memory only for callers before reload."""
         if not film_url:
             return False  # Can't update whitelist without URL
             
         try:
+            url_key = letterboxd_film_url_key(film_url)
             # Check if URL already exists in whitelist
             for row_idx, row in self.whitelist.iterrows():
                 url = row.get('Link', '')
-                if url == film_url:
+                url = '' if pd.isna(url) else str(url).strip()
+                if url and (url == film_url or letterboxd_film_url_key(url) == url_key):
                     self.whitelist.at[row_idx, 'Title'] = normalize_text(str(film_title))
                     self.whitelist.at[row_idx, 'Year'] = str(release_year).strip() if release_year is not None else ''
-                    # Never touch Blank here; user maintains tmdbID manually.
+                    # Never touch tmdbId here; user maintains tmdbID manually.
                     self.whitelist_lookup[film_url] = (movie_data, row_idx, film_url)
+                    if url_key:
+                        self.whitelist_lookup[url_key] = (movie_data, row_idx, film_url)
                     # Save to Excel
                     self.whitelist.to_excel(WHITELIST_PATH, index=False)
                     self.load_whitelist()  # Reload to ensure consistency
@@ -293,11 +327,13 @@ class MovieProcessor:
             new_row = pd.DataFrame([{
                 'Title': normalize_text(str(film_title)),
                 'Year': str(release_year).strip() if release_year is not None else '',
-                'Blank': '',  # tmdbID (user can fill later)
+                'tmdbId': '',  # tmdbID (user can fill later)
                 'Link': film_url
             }])
             self.whitelist = pd.concat([self.whitelist, new_row], ignore_index=True)
             self.whitelist_lookup[film_url] = (movie_data, len(self.whitelist) - 1, film_url)
+            if url_key:
+                self.whitelist_lookup[url_key] = (movie_data, len(self.whitelist) - 1, film_url)
             print_to_csv(f"🔗 Added link to whitelist for {film_title}")
             
             # Save to Excel
@@ -314,9 +350,10 @@ class MovieProcessor:
         if not film_url:
             return None, None  # Movie not in whitelist
             
-        # Check if URL exists in whitelist lookup
-        if film_url in self.whitelist_lookup:
-            info, row_idx, _ = self.whitelist_lookup[film_url]
+        # Check raw URL, then normalized key
+        lookup_key = film_url if film_url in self.whitelist_lookup else letterboxd_film_url_key(film_url)
+        if lookup_key in self.whitelist_lookup:
+            info, row_idx, _ = self.whitelist_lookup[lookup_key]
             try:
                 if isinstance(info, str):
                     info = json.loads(info)
@@ -357,7 +394,7 @@ class MovieProcessor:
             return False
             
         # Only check URL match, never use title/year
-        return film_url in self.whitelist_lookup
+        return film_url in self.whitelist_lookup or letterboxd_film_url_key(film_url) in self.whitelist_lookup
 
     def is_blacklisted(self, film_title: str, release_year: str = None, film_url: str = None, driver = None) -> bool:
         """Check if a movie is blacklisted using URL as primary identifier."""
@@ -369,6 +406,45 @@ class MovieProcessor:
 
 def setup_webdriver():
     """Create Chrome driver using undetected-chromedriver to avoid Cloudflare/captcha detection."""
+    def _detect_chrome_major_version() -> Optional[int]:
+        """
+        Best-effort detection of installed Chrome major version on Windows.
+        If detection fails, return None and let undetected-chromedriver decide.
+        """
+        # 1) Registry (fast, reliable)
+        try:
+            import winreg  # type: ignore
+
+            for hive in (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE):
+                for subkey in (
+                    r"Software\Google\Chrome\BLBeacon",
+                    r"Software\WOW6432Node\Google\Chrome\BLBeacon",
+                ):
+                    try:
+                        k = winreg.OpenKey(hive, subkey)
+                        v, _ = winreg.QueryValueEx(k, "version")
+                        if v:
+                            major = int(str(v).split(".", 1)[0])
+                            return major
+                    except Exception:
+                        continue
+        except Exception:
+            pass
+
+        # 2) Shell out to chrome.exe (fallback)
+        try:
+            import subprocess
+
+            out = subprocess.check_output(["chrome", "--version"], stderr=subprocess.STDOUT, text=True)
+            # e.g. "Google Chrome 147.0.7727.102"
+            m = re.search(r"(\d+)\.\d+\.\d+\.\d+", out)
+            if m:
+                return int(m.group(1))
+        except Exception:
+            pass
+
+        return None
+
     options = uc.ChromeOptions()
     # Prefer normal window (undetected_chromedriver is already less detectable; headless can still be flagged)
     options.add_argument("--start-maximized")
@@ -385,8 +461,12 @@ def setup_webdriver():
         "safebrowsing.enabled": True,
     }
     options.add_experimental_option("prefs", prefs)
-    # Omit version_main so undetected-chromedriver matches your installed Chrome (avoids mismatch after updates).
-    driver = uc.Chrome(options=options, use_subprocess=True)
+    chrome_major = _detect_chrome_major_version()
+    # If Chrome updates faster/slower than uc's cached driver, pin the driver major to the installed browser.
+    if chrome_major:
+        driver = uc.Chrome(options=options, use_subprocess=True, version_main=chrome_major)
+    else:
+        driver = uc.Chrome(options=options, use_subprocess=True)
     return driver
 
 def is_retryable_error(error):
@@ -438,12 +518,12 @@ def is_retryable_error(error):
     # Default to retryable for unknown errors
     return True
 
-# Final list output (Official_Comedy_100.csv): Title, Year, tmdbID, Link, New Entry?
+# Final list output (aaOfficial_Comedy_100.csv): Title, Year, tmdbID, Link, New Entry?
 OFFICIAL_COMEDY_FILMS: List[Dict] = []
 
 def add_to_MAX_MOVIES(film_title: str, release_year: str, tmdb_id: str, film_url: str, new_entry: str = '') -> bool:
     """
-    Append one row for Official_Comedy_100.csv.
+    Append one row for aaOfficial_Comedy_100.csv.
     new_entry: '' for Comedy_Whitelist (URL) entries, 'Yes' for films not on that whitelist.
     Returns True if added, False if missing URL or at MAX_MOVIES.
     Duplicate URL checks happen in process_movie_data / scrape loop.
@@ -479,12 +559,8 @@ class LetterboxdScraper:
 
     @staticmethod
     def _normalize_listing_film_url(film_url: Optional[str]) -> str:
-        if not film_url:
-            return ""
-        u = film_url.split("?")[0].rstrip("/").lower()
-        if "/film/" in u:
-            return u.split("/film/", 1)[1].strip("/")
-        return u
+        # Backwards-compat wrapper for shared normalizer.
+        return letterboxd_film_url_key(film_url)
 
     def _build_film_data_list_from_containers(self, film_containers) -> List[dict]:
         film_data_list: List[dict] = []
@@ -565,7 +641,7 @@ class LetterboxdScraper:
         if any(movie['Link'] == film_url for movie in OFFICIAL_COMEDY_FILMS):
             print_to_csv(f"⚠️ {film_title} was already processed in this session. Skipping.")
             return False
-        if film_url in self.processor.whitelist_lookup:
+        if self.processor.is_whitelisted(None, None, film_url):
             whitelist_info, _ = self.processor.get_whitelist_data(None, None, film_url)
             self.process_movie_data(whitelist_info or {}, film_title, film_url)
             return False
@@ -741,7 +817,7 @@ class LetterboxdScraper:
                         
             # Whitelist membership: URL on Comedy_Whitelist → add directly without opening the film page.
             # (The whitelist is treated like an allow-list for the output list.)
-            if film_url in self.processor.whitelist_lookup:
+            if self.processor.is_whitelisted(None, None, film_url):
                 self.processor.process_whitelist_info(info, film_url)
                 self.valid_movies_count += 1
                 print_to_csv(f"✅ Added whitelisted film {film_title} ({self.valid_movies_count}/{MAX_MOVIES})")
@@ -907,12 +983,12 @@ class LetterboxdScraper:
             self.processor.rejected_data.append([film_title, release_year, None, f'Error processing: {str(e)}'])
 
     def save_official_comedy_csv(self):
-        """Write Official_Comedy_100.csv: Title, Year, tmdbID, Link, New Entry?"""
+        """Write aaOfficial_Comedy_100.csv: Title, Year, tmdbID, Link, New Entry?"""
         if not OFFICIAL_COMEDY_FILMS:
             return
         df = pd.DataFrame(OFFICIAL_COMEDY_FILMS)
         df = df[['Title', 'Year', 'tmdbID', 'Link', 'New Entry?']]
-        output_path = os.path.join(BASE_DIR, 'Official_Comedy_100.csv')
+        output_path = os.path.join(BASE_DIR, 'aaOfficial_Comedy_100.csv')
         df.to_csv(output_path, index=False, encoding='utf-8')
 
     def save_results(self):
@@ -954,7 +1030,6 @@ def main():
                 print_to_csv(f"Attempt {retry_count + 1}/{MAX_RETRIES + 1}")
             else:
                 print_to_csv(f"\n{'Starting Official Comedy 100 scrape':=^100}")
-                print_to_csv(f"Genre: {genre}, Sort: {sort_type} (by rating)")
 
             scraper = LetterboxdScraper()
             current_scraper = scraper

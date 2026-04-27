@@ -222,6 +222,33 @@ def update_letterboxd_lists():
         }
     }
 
+    def _detect_chrome_major_version():
+        try:
+            import winreg  # type: ignore
+            for hive in (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE):
+                for subkey in (
+                    r"Software\Google\Chrome\BLBeacon",
+                    r"Software\WOW6432Node\Google\Chrome\BLBeacon",
+                ):
+                    try:
+                        k = winreg.OpenKey(hive, subkey)
+                        v, _ = winreg.QueryValueEx(k, "version")
+                        if v:
+                            return int(str(v).split(".", 1)[0])
+                    except Exception:
+                        continue
+        except Exception:
+            pass
+        try:
+            import subprocess
+            out = subprocess.check_output(["chrome", "--version"], stderr=subprocess.STDOUT, text=True)
+            for token in out.split():
+                if token and token[0].isdigit() and "." in token:
+                    return int(token.split(".", 1)[0])
+        except Exception:
+            pass
+        return None
+
     # Initialize the Chrome driver (undetected-chromedriver to reduce Cloudflare/captcha blocks)
     options = uc.ChromeOptions()
     options.add_argument("--start-maximized")
@@ -230,8 +257,11 @@ def update_letterboxd_lists():
         options.add_argument(f"--user-data-dir={CHROME_USER_DATA_DIR}")
         if CHROME_PROFILE_DIR:
             options.add_argument(f"--profile-directory={CHROME_PROFILE_DIR}")
-    # Omit version_main so undetected-chromedriver matches your installed Chrome (avoids mismatch after updates).
-    driver = uc.Chrome(options=options, use_subprocess=True)
+    chrome_major = _detect_chrome_major_version()
+    if chrome_major:
+        driver = uc.Chrome(options=options, use_subprocess=True, version_main=chrome_major)
+    else:
+        driver = uc.Chrome(options=options, use_subprocess=True)
     time.sleep(1)  # let Chrome finish starting before navigation
 
     try:
