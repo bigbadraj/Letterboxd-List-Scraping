@@ -337,7 +337,7 @@ def main():
         {"url": "https://letterboxd.com/andregps/list/letterboxd-four-favorites-interviews/"},
         {"url": "https://letterboxd.com/mattheweg/list/the-top-rated-movie-of-every-year-by-letterboxd/"},
         {"url": "https://letterboxd.com/rileyaust/list/movies-where-a-5-star-rating-is-most-common/"},
-        {"url": "https://letterboxd.com/jonny5244/list/billion-dollar-movies/"},
+        {"url": "https://letterboxd.com/000_leo/list/1-billion-club/"},
         {"url": "https://letterboxd.com/desdemoor/list/letterboxd-113-highest-rated-19th-century/"},
         {"url": "https://letterboxd.com/official/list/top-100-underseen-films/"},
         {"url": "https://letterboxd.com/stateofhailey/list/letterboxds-top-250-romantic-comedy-films/"},

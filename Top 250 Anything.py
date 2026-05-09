@@ -57,6 +57,31 @@ def print_to_csv(message: str):
         writer = csv.writer(file)
         writer.writerow([message])  # Write the message as a new row
 
+
+def normalize_tmdb_id_for_sheet(value):
+    """Whole-number TMDB id for Excel/cache (no trailing .0); empty if missing."""
+    if value is None:
+        return ''
+    if isinstance(value, bool):
+        return ''
+    if isinstance(value, float):
+        if pd.isna(value):
+            return ''
+        try:
+            return str(int(value))
+        except (ValueError, OverflowError):
+            return ''
+    if isinstance(value, int):
+        return str(value)
+    s = str(value).strip()
+    if not s or s.lower() == 'nan':
+        return ''
+    try:
+        return str(int(float(s)))
+    except ValueError:
+        return s
+
+
 class MovieCache:
     def __init__(self):
         self.cache = None
@@ -67,17 +92,29 @@ class MovieCache:
         """Load the Excel cache file."""
         try:
             self.cache = pd.read_excel(EXCEL_PATH)
+            # Ensure expected columns exist and keep tmdbID as column 4.
+            if 'Title' not in self.cache.columns:
+                self.cache['Title'] = ''
+            if 'Year' not in self.cache.columns:
+                self.cache['Year'] = ''
+            if 'Link' not in self.cache.columns:
+                self.cache['Link'] = ''
+            if 'tmdbID' not in self.cache.columns:
+                self.cache['tmdbID'] = ''
+            self.cache = self.cache[['Title', 'Year', 'Link', 'tmdbID']]
+            self.cache['tmdbID'] = self.cache['tmdbID'].map(normalize_tmdb_id_for_sheet)
             # Create lookup dictionary for faster matching
             for idx, row in self.cache.iterrows():
                 self.cache_lookup[row['Link']] = {
                     'Title': row['Title'],
                     'Year': row['Year'],
+                    'tmdbID': row['tmdbID'],
                     'index': idx
                 }
             print_to_csv(f"📚 Loaded {len(self.cache)} movies from cache")
         except FileNotFoundError:
             print_to_csv("📚 Cache file not found. Creating new file.")
-            self.cache = pd.DataFrame(columns=['Title', 'Year', 'Link'])
+            self.cache = pd.DataFrame(columns=['Title', 'Year', 'Link', 'tmdbID'])
             self.cache.to_excel(EXCEL_PATH, index=False)
     
     def is_cached(self, film_url: str) -> bool:
@@ -88,29 +125,35 @@ class MovieCache:
         """Get cached data for a movie."""
         return self.cache_lookup.get(film_url)
     
-    def update_cache(self, film_title: str, release_year: str, film_url: str):
+    def update_cache(self, film_title: str, release_year: str, film_url: str, tmdb_id: str = ''):
         """Update the cache with new movie data."""
+        tmdb_id = normalize_tmdb_id_for_sheet(tmdb_id)
         if film_url in self.cache_lookup:
             # Update existing entry
             idx = self.cache_lookup[film_url]['index']
             self.cache.at[idx, 'Title'] = film_title
             self.cache.at[idx, 'Year'] = release_year
+            self.cache.at[idx, 'tmdbID'] = tmdb_id
             print_to_csv(f"📝 Updated cache entry for {film_title} ({release_year})")
         else:
             # Add new entry
             new_row = pd.DataFrame([{
                 'Title': film_title,
                 'Year': release_year,
-                'Link': film_url
+                'Link': film_url,
+                'tmdbID': tmdb_id
             }])
             self.cache = pd.concat([self.cache, new_row], ignore_index=True)
             self.cache_lookup[film_url] = {
                 'Title': film_title,
                 'Year': release_year,
+                'tmdbID': tmdb_id,
                 'index': len(self.cache) - 1
             }
             print_to_csv(f"💾 Added new cache entry for {film_title} ({release_year})")
         
+        self.cache_lookup[film_url]['tmdbID'] = tmdb_id
+        self.cache = self.cache[['Title', 'Year', 'Link', 'tmdbID']]
         # Save to Excel immediately
         self.cache.to_excel(EXCEL_PATH, index=False)
     
@@ -221,25 +264,64 @@ def format_time(seconds):
     else:
         return f"{seconds}s"
 
+
+def normalize_listing_film_url(film_url):
+    """Stable comparison for list poster hrefs (strip query, trailing slash, compare film slug)."""
+    if not film_url:
+        return ""
+    u = film_url.split("?")[0].rstrip("/").lower()
+    if "/film/" in u:
+        return u.split("/film/", 1)[1].strip("/")
+    return u
+
+
+def scrape_film_page_details(driver, film_url: str, max_retries: int = 20):
+    """Fetch title/year/tmdbID/ratingCount from a film page with retries."""
+    for retry in range(max_retries):
+        try:
+            driver.get(film_url)
+            WebDriverWait(driver, 10).until(
+                EC.presence_of_element_located((By.CSS_SELECTOR, 'meta[property="og:title"]'))
+            )
+            time.sleep(random.uniform(1.0, 1.5))
+
+            meta_title = driver.find_element(By.CSS_SELECTOR, 'meta[property="og:title"]')
+            title_content = meta_title.get_attribute('content')
+            film_title = title_content.split(' (')[0]
+            release_year = title_content.split('(')[-1].strip(')')
+
+            page_source = driver.page_source
+            rating_count = 0
+            rating_match = re.search(r'ratingCount":(\d+)', page_source)
+            if rating_match:
+                rating_count = int(rating_match.group(1))
+
+            tmdb_id = ''
+            tmdb_match = re.search(r'data-tmdb-id="(\d+)"', page_source)
+            if tmdb_match:
+                tmdb_id = tmdb_match.group(1)
+
+            return film_title, release_year, tmdb_id, rating_count
+        except Exception as e:
+            print_to_csv(f"Error processing {film_url} (attempt {retry + 1}/{max_retries}): {str(e)}")
+            if retry < max_retries - 1:
+                print_to_csv(f"Retrying... (Attempt {retry + 1}/{max_retries})")
+                time.sleep(2)
+                continue
+    return None, None, '', None
+
 # Initialize progress tracker
 progress_tracker = ProgressTracker(max_movies)
 print_to_csv(f"\n{' Starting Film Scraping ':=^100}")
 
-# First, collect all film URLs
-print_to_csv("Collecting film URLs...")
-film_urls = []
-current_page = 1
-
-while len(film_urls) < max_movies:
-    url = f'{base_url}page/{current_page}/'
-    print_to_csv(f'Collecting URLs from page {current_page}')
-    
-    # Add retry mechanism for page loading
+def load_listing_page_and_extract_ordered_urls(listing_page_num):
+    """Load listing page N and return every /film/ URL on that page in DOM order (full page)."""
+    url = f'{base_url}page/{listing_page_num}/'
+    print_to_csv(f'Collecting URLs from page {listing_page_num}')
     page_retries = 20
     for retry in range(page_retries):
         try:
             driver.get(url)
-            # Wait for the page to load
             WebDriverWait(driver, 10).until(
                 EC.presence_of_element_located((By.CSS_SELECTOR, 'li.posteritem'))
             )
@@ -249,10 +331,9 @@ while len(film_urls) < max_movies:
             if retry == page_retries - 1:
                 print_to_csv(f"❌ Failed to load page after {page_retries} attempts: {str(e)}")
                 raise Exception(f"Failed to load page after {page_retries} attempts: {str(e)}")
-            print_to_csv(f"Retry {retry + 1}/{page_retries} loading page {current_page}: {str(e)}")
+            print_to_csv(f"Retry {retry + 1}/{page_retries} loading page {listing_page_num}: {str(e)}")
             time.sleep(2)
-    
-    # Find all film containers with retry mechanism
+
     film_containers = []
     container_retries = 25
     for retry in range(container_retries):
@@ -260,13 +341,12 @@ while len(film_urls) < max_movies:
             film_containers = WebDriverWait(driver, 10).until(
                 EC.presence_of_all_elements_located((By.CSS_SELECTOR, 'li.posteritem'))
             )
-            if len(film_containers) > 0:  # Check for any containers
+            if len(film_containers) > 0:
                 break
-            else:
-                print_to_csv(f"Found no containers, retrying... (Attempt {retry + 1}/{container_retries})")
-                time.sleep(5)  # Wait longer between retries
-                driver.refresh()  # Refresh the page
-                time.sleep(2)  # Wait for refresh
+            print_to_csv(f"Found no containers, retrying... (Attempt {retry + 1}/{container_retries})")
+            time.sleep(5)
+            driver.refresh()
+            time.sleep(2)
         except Exception as e:
             if retry == container_retries - 1:
                 print_to_csv(f"❌ Failed to find film containers after {container_retries} attempts: {str(e)}")
@@ -275,19 +355,72 @@ while len(film_urls) < max_movies:
             time.sleep(5)
             driver.refresh()
             time.sleep(2)
-    
+
+    page_urls = []
     for container in film_containers:
-        if len(film_urls) >= max_movies:
-            break
         try:
-            # Look for the film link within the posteritem container
             film_link = container.find_element(By.CSS_SELECTOR, 'a[href*="/film/"]')
-            film_url = film_link.get_attribute('href')
-            film_urls.append(film_url)
+            page_urls.append(film_link.get_attribute('href'))
         except Exception as e:
             print_to_csv(f"Error extracting film URL from container: {str(e)}")
+    return page_urls
+
+
+def extend_film_urls_with_page(film_urls, page_urls, max_movies_limit):
+    """Append URLs from one listing page, skipping a trailing/leading duplicate of film_urls[-1]. Returns how many were appended."""
+    added = 0
+    for u in page_urls:
+        if len(film_urls) >= max_movies_limit:
+            break
+        if film_urls and normalize_listing_film_url(u) == normalize_listing_film_url(film_urls[-1]):
             continue
-    
+        film_urls.append(u)
+        added += 1
+    return added
+
+
+# First, collect all film URLs (with boundary overlap healing like 5000 Pop and Top)
+print_to_csv("Collecting film URLs...")
+film_urls = []
+listing_last_url_prev_page = None
+urls_added_last_page = 0
+current_page = 1
+
+while len(film_urls) < max_movies:
+    page_urls = load_listing_page_and_extract_ordered_urls(current_page)
+    if not page_urls:
+        print_to_csv(f"No film URLs found on page {current_page}; stopping URL collection.")
+        break
+
+    # Volatile sort / pagination: same film can appear as last on P-1 and first on P, hiding another title.
+    if (
+        current_page > 1
+        and listing_last_url_prev_page
+        and normalize_listing_film_url(page_urls[0]) == normalize_listing_film_url(listing_last_url_prev_page)
+    ):
+        print_to_csv(
+            f"🔗 Listing boundary overlap: first row on page {current_page} matches the last row URL from the "
+            f"previous page snapshot. Reloading pages {current_page - 1} and {current_page} to refresh snapshots "
+            f"(volatile sort / pagination)."
+        )
+        prev_urls = load_listing_page_and_extract_ordered_urls(current_page - 1)
+        if not prev_urls:
+            print_to_csv("⚠️ Boundary heal: could not reload previous page; continuing with original page data.")
+        else:
+            if urls_added_last_page > 0:
+                del film_urls[-urls_added_last_page:]
+            urls_added_last_page = extend_film_urls_with_page(film_urls, prev_urls, max_movies)
+            listing_last_url_prev_page = prev_urls[-1]
+            refreshed = load_listing_page_and_extract_ordered_urls(current_page)
+            if refreshed:
+                page_urls = refreshed
+            else:
+                print_to_csv(
+                    "⚠️ Boundary heal: could not reload current page after previous; continuing with original page snapshot."
+                )
+
+    urls_added_last_page = extend_film_urls_with_page(film_urls, page_urls, max_movies)
+    listing_last_url_prev_page = page_urls[-1]
     current_page += 1
     time.sleep(random.uniform(1.0, 1.5))
 
@@ -304,11 +437,13 @@ with tqdm(total=max_movies, desc="Total Progress", unit=" films") as overall_pba
             cached_data = movie_cache.get_cached_data(film_url)
             film_title = cached_data['Title']
             release_year = cached_data['Year']
+            tmdb_id = normalize_tmdb_id_for_sheet(cached_data.get('tmdbID'))
             print_to_csv(f"✅ Using cached data for {film_title} ({release_year})")
             
             film_titles.append({
                 'Title': film_title,
-                'Year': release_year
+                'Year': release_year,
+                'tmdbID': tmdb_id
             })
             total_titles += 1
             progress_tracker.increment()
@@ -321,74 +456,36 @@ with tqdm(total=max_movies, desc="Total Progress", unit=" films") as overall_pba
             print_to_csv(f"{'Processing Speed: {:.2f} movies/second'.format(stats['movies_per_second']):^100}")
             continue
             
-        # Add retry logic for fetching film details
-        max_retries = 20
-        success = False
+        film_title, release_year, tmdb_id, rating_count = scrape_film_page_details(driver, film_url)
+        if rating_count is None:
+            continue
         
-        for retry in range(max_retries):
-            try:
-                driver.get(film_url)
-                WebDriverWait(driver, 10).until(
-                    EC.presence_of_element_located((By.CSS_SELECTOR, 'meta[property="og:title"]'))
-                )
-                time.sleep(random.uniform(1.0, 1.5))
-                
-                # Get title and year in one go from the meta title
-                meta_title = driver.find_element(By.CSS_SELECTOR, 'meta[property="og:title"]')
-                title_content = meta_title.get_attribute('content')
-                film_title = title_content.split(' (')[0]
-                release_year = title_content.split('(')[-1].strip(')')
-                
-                # Extract rating count
-                rating_count = 0
-                try:
-                    page_source = driver.page_source
-                    match = re.search(r'ratingCount":(\d+)', page_source)
-                    if match:
-                        rating_count = int(match.group(1))
-                except Exception as e:
-                    print_to_csv(f"Error extracting rating count: {str(e)}")
-                    if retry < max_retries - 1:
-                        print_to_csv(f"Retrying... (Attempt {retry + 1}/{max_retries})")
-                        time.sleep(2)
-                        continue
-                    break
-                
-                # Only add movies with sufficient ratings
-                if rating_count >= MIN_RATING_COUNT:
-                    # Update cache with new movie data
-                    movie_cache.update_cache(film_title, release_year, film_url)
-                    
-                    film_titles.append({
-                        'Title': film_title,
-                        'Year': release_year
-                    })
-                    total_titles += 1
-                    progress_tracker.increment()
-                    
-                    # Update the overall progress bar
-                    overall_pbar.update(1)
-                    
-                    # Print progress every movie
-                    stats = progress_tracker.get_progress_stats()
-                    print_to_csv(f"\n{f'Overall Progress: {total_titles}/{max_movies} films':^100}")
-                    print_to_csv(f"{'Elapsed Time: ' + format_time(stats['elapsed_time']) + ' | Estimated Time Remaining: ' + format_time(stats['time_remaining']):^100}")
-                    print_to_csv(f"{'Processing Speed: {:.2f} movies/second'.format(stats['movies_per_second']):^100}")
-                    print_to_csv(f"Last Scraped: {film_title} ({release_year})")
-                    success = True
-                    break
-                else:
-                    print_to_csv(f"Skipping {film_title} - insufficient ratings ({rating_count})")
-                    success = True  # Mark as success since we got the data, just didn't meet criteria
-                    break
-                    
-            except Exception as e:
-                print_to_csv(f"Error processing {film_url} (attempt {retry + 1}/{max_retries}): {str(e)}")
-                if retry < max_retries - 1:
-                    print_to_csv(f"Retrying... (Attempt {retry + 1}/{max_retries})")
-                    time.sleep(2)
-                    continue
-                break
+        tmdb_id = normalize_tmdb_id_for_sheet(tmdb_id)
+        
+        # Only add movies with sufficient ratings
+        if rating_count >= MIN_RATING_COUNT:
+            # Update cache with new movie data
+            movie_cache.update_cache(film_title, release_year, film_url, tmdb_id)
+            
+            film_titles.append({
+                'Title': film_title,
+                'Year': release_year,
+                'tmdbID': tmdb_id
+            })
+            total_titles += 1
+            progress_tracker.increment()
+            
+            # Update the overall progress bar
+            overall_pbar.update(1)
+            
+            # Print progress every movie
+            stats = progress_tracker.get_progress_stats()
+            print_to_csv(f"\n{f'Overall Progress: {total_titles}/{max_movies} films':^100}")
+            print_to_csv(f"{'Elapsed Time: ' + format_time(stats['elapsed_time']) + ' | Estimated Time Remaining: ' + format_time(stats['time_remaining']):^100}")
+            print_to_csv(f"{'Processing Speed: {:.2f} movies/second'.format(stats['movies_per_second']):^100}")
+            print_to_csv(f"Last Scraped: {film_title} ({release_year})")
+        else:
+            print_to_csv(f"Skipping {film_title} - insufficient ratings ({rating_count})")
 
 # Close the browser
 driver.quit()
@@ -401,6 +498,11 @@ else:
 
 # Create a DataFrame and save to CSV if desired
 df = pd.DataFrame(film_titles)
+if not df.empty:
+    for col in ['Title', 'Year', 'tmdbID']:
+        if col not in df.columns:
+            df[col] = ''
+    df = df[['Title', 'Year', 'tmdbID']]
 output_csv = os.path.join(output_dir, 'film_titles.csv')
 df.to_csv(output_csv, index=False, encoding='utf-8')
 print_to_csv("Film titles have been successfully saved to film_titles.csv.")

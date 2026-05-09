@@ -1,6 +1,5 @@
 # Import necessary libraries (Chrome + undetected-chromedriver to reduce Cloudflare/captcha blocks)
 import time
-import random
 import signal
 import sys
 import undetected_chromedriver as uc
@@ -80,7 +79,7 @@ def print_to_csv(message: str):
 
 # Configure locale and constants
 locale.setlocale(locale.LC_ALL, 'en_US.UTF-8')
-MAX_MOVIES = 125
+MAX_MOVIES = 120
 
 # Configure settings
 MIN_RATING_COUNT = 1000
@@ -386,7 +385,7 @@ class MovieProcessor:
         self.blacklist = pd.concat([self.blacklist, new_row], ignore_index=True)
         self.blacklist_lookup[film_url] = True
         self.blacklist.to_excel(BLACKLIST_PATH, index=False)
-        print_to_csv(f"⚫ {film_title} ({release_year}) added to blacklist {reason}")
+        print_to_csv(f"⚫ {film_title} added to blacklist {reason}")
 
     def is_whitelisted(self, film_title: str, release_year: str, film_url: str = None) -> bool:
         """Check if a movie is in the whitelist using ONLY URL as identifier."""
@@ -403,6 +402,24 @@ class MovieProcessor:
             
         # Check if URL exists in blacklist lookup
         return film_url in self.blacklist_lookup
+
+    def extract_runtime(self, driver, film_title: str) -> Optional[int]:
+        """
+        Minutes from the film page footer (same DOM as Genre 250s.py).
+        Returns None if not found — caller should proceed normally (no console noise).
+        """
+        try:
+            runtime_element = WebDriverWait(driver, 10).until(
+                EC.presence_of_element_located((By.CSS_SELECTOR, 'p.text-link.text-footer'))
+            )
+            runtime_text = runtime_element.text
+            match = re.search(r'(\d+)\s*min(?:s)?', runtime_text)
+            if match:
+                return int(match.group(1))
+        except Exception:
+            pass
+        return None
+
 
 def setup_webdriver():
     """Create Chrome driver using undetected-chromedriver to avoid Cloudflare/captcha detection."""
@@ -656,6 +673,17 @@ class LetterboxdScraper:
                         break
                 except Exception:
                     pass
+                runtime_mins = self.processor.extract_runtime(self.driver, film_title)
+                if runtime_mins is not None and runtime_mins < 40:
+                    reason = 'Runtime under 40 minutes'
+                    ry = str(release_year).strip() if release_year else ''
+                    self.processor.add_to_blacklist(film_title, ry, reason, film_url)
+                    print_to_csv(
+                        f"❌ {film_title} was not added: {reason} ({runtime_mins} min)."
+                    )
+                    self.processor.rejected_data.append([film_title, release_year, None, reason])
+                    self.rejected_movies_count += 1
+                    break
                 page_source = self.driver.page_source
                 rating_quick = extract_rating_count_from_film_page(self.driver)
                 if rating_quick is not None:
@@ -821,12 +849,6 @@ class LetterboxdScraper:
                 self.processor.process_whitelist_info(info, film_url)
                 self.valid_movies_count += 1
                 print_to_csv(f"✅ Added whitelisted film {film_title} ({self.valid_movies_count}/{MAX_MOVIES})")
-                
-                # 2% chance to clear the whitelist data for random auditing
-                if random.random() < 0.02:
-                    self.processor.update_whitelist(film_title, release_year, {}, film_url)
-                    print_to_csv(f"🤓 Random data audit scheduled for {film_title} ({release_year})")
-                
                 return True
             
             # If not whitelisted, process as a new movie
