@@ -481,7 +481,7 @@ def main():
         {"url": "https://letterboxd.com/official/list/most-fans-on-letterboxd-with-pronoun-he-2025/"},
         {"url": "https://letterboxd.com/official/list/most-fans-on-letterboxd-with-pronoun-she-4/"},
         {"url": "https://letterboxd.com/official/list/most-fans-on-letterboxd-with-pronoun-ze-or-4/"},
-        {"url": "https://letterboxd.com/thisisdrew/list/they-shoot-pictures-dont-they-1000-greatest-5/"},
+        {"url": "https://letterboxd.com/thisisdrew/list/they-shoot-pictures-dont-they-1000-greatest-7/"},
         {"url": "https://letterboxd.com/bigbadraj/list/top-250-most-popular-romantic-comedy-narrative/"},
         {"url": "https://letterboxd.com/bigbadraj/list/writers-guild-of-america-best-screenplay/"},
         {"url": "https://letterboxd.com/official/list/letterboxds-top-500-films/"},

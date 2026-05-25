@@ -47,7 +47,7 @@ LISTS: Sequence[Tuple[str, str, str, str, str, int]] = (
         250,
     ),
     (
-        "https://letterboxd.com/bigbadraj/list/top-100-highest-rated-stand-up-comedy-specials/",
+        "https://letterboxd.com/official/list/top-100-comedy-specials/",
         "aaOfficial_Comedy_100.csv",
         "aaOfficial_Comedy_100_stats.txt",
         "aaOfficial_Comedy_100_comment.txt",
@@ -358,59 +358,15 @@ def comment_txt_linked(
     return "\n".join(lines) + "\n"
 
 
-def in_out_txt_minimal(
-    additions: Sequence[FilmChange],
-    removals: Sequence[FilmChange],
-) -> str:
-    """Minimal plain text output with only In/Out sections."""
-    lines: List[str] = ["In:"]
-    if additions:
-        for title, rank, _ in additions:
-            lines.append(f"{title} (#{rank})")
-    else:
-        lines.append("—")
-    lines.extend(["", "Out:"])
-    if removals:
-        for title, rank, _ in removals:
-            lines.append(f"{title} (#{rank})")
-    else:
-        lines.append("—")
-    return "\n".join(lines) + "\n"
-
-
-def comment_txt_linked_minimal(
-    additions: Sequence[FilmChange],
-    removals: Sequence[FilmChange],
-) -> str:
-    """Linked comment layout with only In/Out sections."""
-    lines: List[str] = ["In:"]
-    if additions:
-        for title, rank, path in additions:
-            url = path_to_letterboxd_url(path)
-            lines.append(
-                f"· <a href=\"{html.escape(url, quote=True)}\" rel=\"nofollow\">"
-                f"{html.escape(title)}</a> (#{rank})"
-            )
-    else:
-        lines.append("—")
-    lines.extend(["", "Out:"])
-    if removals:
-        n = len(removals)
-        for i, (title, rank, path) in enumerate(removals):
-            url = path_to_letterboxd_url(path)
-            end = "." if i == n - 1 else ""
-            lines.append(
-                f"· <a href=\"{html.escape(url, quote=True)}\" rel=\"nofollow\">"
-                f"{html.escape(title)}</a> (#{rank}){end}"
-            )
-    else:
-        lines.append("—")
-    return "\n".join(lines) + "\n"
-
-
-_STATS_FOOTER = (
+_STATS_FOOTER_RUNTIME = (
     "<b><a href=\"https://boxd.it/2l6d\">Official Lists HQ Directory</a></b> | "
     "<a href=\"https://letterboxd.com/official/tag/runtime/lists/\">Runtime Lists</a> | "
+    "<a href=\"https://letterboxd.com/official/tag/raj-thecat/lists/\">Lists by Raj Thecat</a>"
+)
+
+_STATS_FOOTER_COMEDY = (
+    "<b><a href=\"https://boxd.it/2l6d\">Official Lists HQ Directory</a></b> | "
+    "<a href=\"https://letterboxd.com/official/tag/comedy-special/lists/\">Comedy Special Lists</a> | "
     "<a href=\"https://letterboxd.com/official/tag/raj-thecat/lists/\">Lists by Raj Thecat</a>"
 )
 
@@ -423,9 +379,13 @@ def stats_html_full(
 ) -> str:
     """Letterboxd-ready stats blurb; only the blockquote body varies with diffs."""
     as_of_phrase = list_updated_date_phrase(as_of)
+    if template_key == "comedy_100":
+        source_url = "https://letterboxd.com/films/genre/comedy/by/rating/"
+    else:
+        source_url = "https://letterboxd.com/films/by/rating/"
     intro = (
         f"As of {as_of_phrase}. Curated by <a href=\"https://boxd.it/8XQUh\">Raj Thecat</a>, "
-        f"extracted from <a href=\"https://letterboxd.com/films/by/rating/\">here</a>. "
+        f"extracted from <a href=\"{source_url}\">here</a>. "
     )
     if template_key == "above_150":
         intro += (
@@ -440,6 +400,7 @@ def stats_html_full(
             "•\xa0This list excludes: documentaries of any kind, self-released web videos, DTV films, "
             "recap or recut films, theatre or stage shows, TV series or TV movies, specials or episodes."
         )
+        footer = _STATS_FOOTER_RUNTIME
     elif template_key == "below_100":
         intro += (
             "This list ranks narrative feature films below 100 minutes in runtime "
@@ -453,13 +414,27 @@ def stats_html_full(
             "•\xa0This list excludes: documentaries of any kind, self-released web videos, DTV films, "
             "recap or recut films, theatre or stage shows, TV series or TV movies, specials or episodes."
         )
+        footer = _STATS_FOOTER_RUNTIME
     elif template_key == "comedy_100":
-        return blockquote_html(as_of, additions, removals) + "\n"
+        intro += "This list ranks comedy specials by average member rating."
+        eligibility = (
+            "<b>Eligibility rules:</b>\n"
+            "•\xa0There is a 1,000 minimum ratings threshold.\n"
+            "•\xa0The special must be at least 40 minutes in runtime and released as a singular "
+            "piece, not as a part of a series.\n"
+            "•\xa0The special must be a recording of a live performance (exceptions can be made due "
+            "to Covid or similar circumstances making live shows impossible) and must be performed "
+            "and created by an individual or small preexisting group (specials from a channel of "
+            "YouTubers are allowed; large ensemble productions or cast-based stage musicals are not).\n"
+            "•\xa0One-person plays, dramatic monologues, and narrative stage productions are not "
+            "allowed, even if comedic."
+        )
+        footer = _STATS_FOOTER_COMEDY
     else:
         raise ValueError(f"Unknown stats template: {template_key!r}")
 
     block = blockquote_html(as_of, additions, removals)
-    return "\n\n".join([intro, block, eligibility, _STATS_FOOTER]) + "\n"
+    return "\n\n".join([intro, block, eligibility, footer]) + "\n"
 
 
 def blockquote_html(
@@ -516,10 +491,7 @@ def run() -> str:
 
         comment_path = os.path.join(OUTPUT_DIR, comment_name)
         with open(comment_path, "w", encoding="utf-8", newline="") as out:
-            if stats_template == "comedy_100":
-                out.write(comment_txt_linked_minimal(additions, removals))
-            else:
-                out.write(comment_txt_linked(as_of, additions, removals))
+            out.write(comment_txt_linked(as_of, additions, removals))
 
     return "\n\n".join(chunks)
 

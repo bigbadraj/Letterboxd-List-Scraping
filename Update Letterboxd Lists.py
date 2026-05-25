@@ -192,10 +192,6 @@ def update_letterboxd_lists():
             "url": "https://letterboxd.com/bigbadraj/list/top-250-highest-rated-things-on-letterboxd/edit/",
             "description": "Minimum 1,000 ratings. Otherwise, anything on Letterboxd is eligible.\n\nLast Updated: {date}\n\n<a href=https://letterboxd.com/bigbadraj/list/the-official-list-index/> Check out more of the lists I update regularly! </a>"
         },
-        "stand_up_comedy": {
-            "url": "https://letterboxd.com/bigbadraj/list/top-100-highest-rated-stand-up-comedy-specials/edit/",
-            "description": "Minimum 1,000 ratings.\n\nLast Updated: {date}\n\n<a href=https://letterboxd.com/bigbadraj/list/the-official-list-index/> Check out more of the lists I update regularly! </a>\n\n<a href=https://letterboxd.com/asset/list/stand-up-comedy-a-comprehensive-list/> Based off of this list of Stand-Up Comedy Specials </a>"
-        },
         "box_office_real": {
             "url": "https://letterboxd.com/bigbadraj/list/top-250-highest-grossing-movies-of-all-time-1/edit/",
             "description": "According to Box Office Mojo.\n\nLast Updated: {date}\n\n<a href=https://letterboxd.com/bigbadraj/list/the-official-list-index/> Check out more of the lists I update regularly! </a>"
