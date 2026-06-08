@@ -333,7 +333,7 @@ def main():
         {"url": "https://letterboxd.com/fcbarcelona/list/movies-everyone-should-watch-at-least-once/"},
         {"url": "https://letterboxd.com/prof_ratigan/list/top-5000-films-of-all-time-calculated/"},
         {"url": "https://letterboxd.com/bigbadraj/list/every-movie-ive-seen-ranked/"},
-        {"url": "https://letterboxd.com/bigbadraj/list/top-100-highest-rated-stand-up-comedy-specials/"},
+        {"url": "film_titles_top-100-comedy-specials.json"},
         {"url": "https://letterboxd.com/andregps/list/letterboxd-four-favorites-interviews/"},
         {"url": "https://letterboxd.com/mattheweg/list/the-top-rated-movie-of-every-year-by-letterboxd/"},
         {"url": "https://letterboxd.com/rileyaust/list/movies-where-a-5-star-rating-is-most-common/"},
@@ -487,6 +487,8 @@ def main():
         {"url": "https://letterboxd.com/official/list/letterboxds-top-500-films/"},
         {"url": "https://letterboxd.com/travissmcclain/list/writers-guild-of-america-101-greatest-screenplays/"},
         {"url": "https://letterboxd.com/j_calgaro/list/the-ultimate-film-studies-watchlist-by-the/"},
+        {"url": "https://letterboxd.com/bigbadraj/list/wgas-101-funniest-screenplays/"},
+        {"url": "https://letterboxd.com/bigbadraj/list/the-house-of-tabulas-30-greatest-films/"},
     ]
     
     # Calculate total films across all relevant lists
