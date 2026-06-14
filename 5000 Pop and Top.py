@@ -129,6 +129,7 @@ MAX_MOVIES_SOUTH_AMERICA_RATING = 250
 # File paths
 BLACKLIST_PATH = os.path.join(LIST_DIR, 'blacklist.xlsx')
 WHITELIST_PATH = os.path.join(LIST_DIR, 'whitelist.xlsx')
+WHITELIST_SAVE_BATCH_SIZE = 25
 OFFICIAL_WHITELIST_PATH = os.path.join(LIST_DIR, 'Official Whitelist.xlsx')
 ZERO_REVIEWS_PATH = os.path.join(LIST_DIR, 'Zero_Reviews.xlsx')  # Add new path
 
@@ -372,6 +373,8 @@ class MovieProcessor:
         self.country_counts: Dict[str, int] = {}
         self.rating_counts: Dict[str, int] = {}
         self.mpaa_counts: Dict[str, int] = {}
+        self._whitelist_dirty = False
+        self._whitelist_pending_writes = 0
 
     def load_whitelist(self):
         """Load and initialize the whitelist data."""
@@ -588,38 +591,55 @@ class MovieProcessor:
 
 
             
+    def _save_whitelist(self, force: bool = False):
+        """Persist in-memory whitelist to disk. Batched unless force=True."""
+        if not force:
+            self._whitelist_dirty = True
+            self._whitelist_pending_writes += 1
+            if self._whitelist_pending_writes < WHITELIST_SAVE_BATCH_SIZE:
+                return
+            write_reason = f"batch of {self._whitelist_pending_writes}"
+        else:
+            pending = self._whitelist_pending_writes
+            write_reason = f"final flush ({pending} pending)" if pending else "final flush"
+
+        self.whitelist.to_excel(WHITELIST_PATH, index=False)
+        print_to_csv(f"💾 Whitelist written to disk ({write_reason})")
+        self._whitelist_dirty = False
+        self._whitelist_pending_writes = 0
+
+    def flush_whitelist(self):
+        """Write any pending whitelist changes to disk (e.g. end of run or shutdown)."""
+        if self._whitelist_dirty:
+            self._save_whitelist(force=True)
+
     def update_whitelist(self, film_title: str, release_year: str, movie_data: Dict, film_url: str = None) -> bool:
         """Update whitelist with movie data using URL as primary identifier."""
         if not film_url:
             return False  # Can't update whitelist without URL
             
         try:
-            # Check if URL already exists in whitelist
-            for row_idx, row in self.whitelist.iterrows():
-                url = row.get('Link', '')
-                if url == film_url:
-                    # Update existing entry
-                    self.whitelist.at[row_idx, 'Information'] = json.dumps(movie_data)
-                    self.whitelist_lookup[film_url] = (movie_data, row_idx, film_url)
-                    # Save to Excel
-                    self.whitelist.to_excel(WHITELIST_PATH, index=False)
-                    self.load_whitelist()  # Reload to ensure consistency
-                    return True
-            
-            # Add new entry if URL not found
+            info_json = json.dumps(movie_data)
+
+            if film_url in self.whitelist_lookup:
+                _, row_idx, _ = self.whitelist_lookup[film_url]
+                self.whitelist.at[row_idx, 'Information'] = info_json
+                self.whitelist_lookup[film_url] = (movie_data, row_idx, film_url)
+                print_to_csv(f"📝 Whitelist updated in memory for {film_title}")
+                self._save_whitelist()
+                return True
+
             new_row = pd.DataFrame([{
-                'Title': film_title,
-                'Year': release_year,
-                'Information': json.dumps(movie_data),
+                'Title': normalize_text(film_title),
+                'Year': str(release_year).strip() if release_year is not None else '',
+                'Information': info_json,
                 'Link': film_url
             }])
             self.whitelist = pd.concat([self.whitelist, new_row], ignore_index=True)
-            self.whitelist_lookup[film_url] = (movie_data, len(self.whitelist) - 1, film_url)
-            print_to_csv(f"🔗 Added link to whitelist for {film_title}")
-            
-            # Save to Excel
-            self.whitelist.to_excel(WHITELIST_PATH, index=False)
-            self.load_whitelist()  # Reload to ensure consistency
+            row_idx = len(self.whitelist) - 1
+            self.whitelist_lookup[film_url] = (movie_data, row_idx, film_url)
+            print_to_csv(f"🔗 Whitelist link added in memory for {film_title}")
+            self._save_whitelist()
             return True
             
         except Exception as e:
@@ -1019,6 +1039,12 @@ def format_time(seconds):
     else:
         return f"{seconds}s"
 
+# Letterboxd tab content lives in #tab-panel-* panels (#tab-* IDs are tab triggers only — do not combine with comma selectors).
+SEL_TAB_CREW = '#tab-panel-crew'
+SEL_TAB_CAST = '#tab-panel-cast'
+SEL_TAB_DETAILS = '#tab-panel-details'
+SEL_TAB_GENRES = '#tab-panel-genres'
+
 def extract_all_movie_data(driver) -> Optional[Dict]:
     """Extract all movie data in a single JavaScript execution for maximum efficiency."""
     try:
@@ -1043,7 +1069,7 @@ def extract_all_movie_data(driver) -> Optional[Dict]:
             directors: (() => {
                 const names = [];
                 const seen = new Set();
-                const directLinks = Array.from(document.querySelectorAll('#tab-crew a.text-slug[href*="/director/"]'));
+                const directLinks = Array.from(document.querySelectorAll('#tab-panel-crew a.text-slug[href*="/director/"]'));
                 for (const link of directLinks) {
                     const name = (link.textContent || '').trim();
                     if (name && !seen.has(name)) {
@@ -1053,7 +1079,7 @@ def extract_all_movie_data(driver) -> Optional[Dict]:
                 }
                 if (names.length) return names;
 
-                const crewHeadings = Array.from(document.querySelectorAll('#tab-crew h3'));
+                const crewHeadings = Array.from(document.querySelectorAll('#tab-panel-crew h3'));
                 for (const h3 of crewHeadings) {
                     const fullRole = h3.querySelector('.crewrole.-full')?.textContent?.trim() || '';
                     const shortRole = h3.querySelector('.crewrole.-short')?.textContent?.trim() || '';
@@ -1076,24 +1102,25 @@ def extract_all_movie_data(driver) -> Optional[Dict]:
             })(),
             
             // Actors
-            actors: Array.from(document.querySelectorAll('#tab-cast .text-sluglist a.text-slug.tooltip'))
-                .map(el => el.textContent.trim()).filter(Boolean),
+            actors: Array.from(document.querySelectorAll('#tab-panel-cast a.text-slug[href*="/actor/"]'))
+                .map(el => el.textContent.trim())
+                .filter(text => text && !text.includes('…') && text !== 'Show All'),
             
             // Genres
-            genres: Array.from(document.querySelectorAll('#tab-genres .text-sluglist a.text-slug[href*="/films/genre/"]'))
+            genres: Array.from(document.querySelectorAll('#tab-panel-genres .text-sluglist a.text-slug[href*="/films/genre/"]'))
                 .map(el => el.textContent.trim())
                 .filter(text => text && !text.includes('…') && text !== 'Show All'),
             
             // Studios
-            studios: Array.from(document.querySelectorAll('#tab-details .text-sluglist a.text-slug[href*="/studio/"]'))
+            studios: Array.from(document.querySelectorAll('#tab-panel-details .text-sluglist a.text-slug[href*="/studio/"]'))
                 .map(el => el.textContent.trim()).filter(Boolean),
             
             // Languages
-            languages: Array.from(document.querySelectorAll('#tab-details .text-sluglist a.text-slug[href*="/films/language/"]'))
+            languages: Array.from(document.querySelectorAll('#tab-panel-details .text-sluglist a.text-slug[href*="/films/language/"]'))
                 .map(el => el.textContent.trim()).filter(Boolean),
             
             // Countries
-            countries: Array.from(document.querySelectorAll('#tab-details .text-sluglist a.text-slug[href*="/films/country/"]'))
+            countries: Array.from(document.querySelectorAll('#tab-panel-details .text-sluglist a.text-slug[href*="/films/country/"]'))
                 .map(el => el.textContent.trim()).filter(Boolean),
             
             // MPAA
@@ -2021,12 +2048,12 @@ class LetterboxdScraper:
                         try:
                             director_elements = self.driver.find_elements(
                                 By.CSS_SELECTOR,
-                                "#tab-crew a.text-slug[href*='/director/']"
+                                f"{SEL_TAB_CREW} a.text-slug[href*='/director/']"
                             )
                             if not director_elements:
                                 director_elements = self.driver.find_elements(
                                     By.XPATH,
-                                    "//div[@id='tab-crew']//h3[.//span[contains(@class,'crewrole') and normalize-space()='Director']]/following-sibling::div[1]//a[contains(@class,'text-slug')]"
+                                    "//div[@id='tab-panel-crew']//h3[.//span[contains(@class,'crewrole') and normalize-space()='Director']]/following-sibling::div[1]//a[contains(@class,'text-slug')]"
                                 )
                             if not director_elements:
                                 director_elements = self.driver.find_elements(By.CSS_SELECTOR, "span.creatorlist a.contributor, span.creatorlist a.contributor span.prettify")
@@ -2048,10 +2075,13 @@ class LetterboxdScraper:
                         # Extract actors
                         movie_actors = []
                         try:
-                            actor_elements = self.driver.find_elements(By.CSS_SELECTOR, '#tab-cast .text-sluglist a.text-slug.tooltip')
+                            actor_elements = self.driver.find_elements(
+                                By.CSS_SELECTOR,
+                                f'{SEL_TAB_CAST} a.text-slug[href*="/actor/"]'
+                            )
                             for actor in actor_elements:
                                 actor_name = actor.text.strip()
-                                if actor_name:
+                                if actor_name and '…' not in actor_name and actor_name != 'Show All':
                                     movie_actors.append(actor_name)
                         except Exception as e:
                             print_to_csv(f"Error extracting actors: {str(e)}")
@@ -2059,7 +2089,10 @@ class LetterboxdScraper:
                         # Extract genres
                         movie_genres = []
                         try:
-                            genre_elements = self.driver.find_elements(By.CSS_SELECTOR, '#tab-genres .text-sluglist a.text-slug[href*="/films/genre/"]')
+                            genre_elements = self.driver.find_elements(
+                                By.CSS_SELECTOR,
+                                f'{SEL_TAB_GENRES} .text-sluglist a.text-slug[href*="/films/genre/"]'
+                            )
                             for genre in genre_elements:
                                 genre_name = genre.get_attribute('textContent').strip()
                                 if genre_name and not any(char in genre_name for char in ['…', 'Show All']):
@@ -2070,7 +2103,10 @@ class LetterboxdScraper:
                         # Extract studios
                         movie_studios = []
                         try:
-                            studio_elements = self.driver.find_elements(By.CSS_SELECTOR, '#tab-details .text-sluglist a.text-slug[href*="/studio/"]')
+                            studio_elements = self.driver.find_elements(
+                                By.CSS_SELECTOR,
+                                f'{SEL_TAB_DETAILS} .text-sluglist a.text-slug[href*="/studio/"]'
+                            )
                             for studio in studio_elements:
                                 studio_name = studio.get_attribute('textContent').strip()
                                 if studio_name:
@@ -2081,30 +2117,24 @@ class LetterboxdScraper:
                         # Extract languages
                         movie_languages = set()
                         try:
-                            headings = self.driver.find_elements(By.CSS_SELECTOR, '#tab-details h3')
-                            for heading in headings:
-                                span = heading.find_element(By.TAG_NAME, 'span')
-                                heading_text = span.get_attribute('textContent').strip() if span else heading.get_attribute('textContent').strip()
-                                
-                                if any(lang in heading_text for lang in ["Language", "Primary Language", "Languages", "Primary Languages"]):
-                                    try:
-                                        sluglist = heading.find_element(By.XPATH, "following-sibling::div[contains(@class, 'text-sluglist')]")
-                                        if sluglist:
-                                            p_tag = sluglist.find_element(By.TAG_NAME, 'p')
-                                            language_elements = p_tag.find_elements(By.CSS_SELECTOR, 'a.text-slug[href*="/films/language/"]')
-                                            for language in language_elements:
-                                                language_name = language.get_attribute('textContent').strip()
-                                                if language_name:
-                                                    movie_languages.add(language_name)
-                                    except Exception:
-                                        pass
+                            language_elements = self.driver.find_elements(
+                                By.CSS_SELECTOR,
+                                f'{SEL_TAB_DETAILS} .text-sluglist a.text-slug[href*="/films/language/"]'
+                            )
+                            for language in language_elements:
+                                language_name = language.get_attribute('textContent').strip()
+                                if language_name:
+                                    movie_languages.add(language_name)
                         except Exception:
                             pass
                         
                         # Extract countries
                         movie_countries = []
                         try:
-                            country_elements = self.driver.find_elements(By.CSS_SELECTOR, '#tab-details .text-sluglist a.text-slug[href*="/films/country/"]')
+                            country_elements = self.driver.find_elements(
+                                By.CSS_SELECTOR,
+                                f'{SEL_TAB_DETAILS} .text-sluglist a.text-slug[href*="/films/country/"]'
+                            )
                             for country in country_elements:
                                 country_name = country.get_attribute('textContent').strip()
                                 if country_name:
@@ -2140,8 +2170,7 @@ class LetterboxdScraper:
                         }
                         
                         # Update whitelist with fresh data
-                        if self.processor.update_whitelist(film_title, release_year, info, film_url):
-                            print_to_csv(f"📝 Updated whitelist data for {film_title}")
+                        self.processor.update_whitelist(film_title, release_year, info, film_url)
                     except Exception as e:
                         print_to_csv(f"Error collecting fresh data for {film_title}: {str(e)}")
                         self.processor.rejected_data.append([film_title, release_year, None, f'Error collecting data: {str(e)}'])
@@ -2419,7 +2448,10 @@ class LetterboxdScraper:
                 countries = cached_data.get('Countries', []) if cached_data else []
                 if not countries:
                     # Fallback: extract from page if cached data not available
-                    country_elements = self.driver.find_elements(By.CSS_SELECTOR, '#tab-details .text-sluglist a.text-slug[href*="/films/country/"]')
+                    country_elements = self.driver.find_elements(
+                        By.CSS_SELECTOR,
+                        f'{SEL_TAB_DETAILS} .text-sluglist a.text-slug[href*="/films/country/"]'
+                    )
                     countries = [country.get_attribute('textContent').strip() for country in country_elements if country.get_attribute('textContent').strip()]
                 
                 added_to_continent = set()  # Track which continents the film has been added to
@@ -3197,6 +3229,10 @@ def main():
             print_to_csv(f"❌ An error occurred during {scrape_type} execution: {e}")
         finally:
             if scraper:
+                try:
+                    scraper.processor.flush_whitelist()
+                except Exception:
+                    pass
                 try:
                     scraper.driver.quit()
                 except:
