@@ -471,7 +471,7 @@ class MovieProcessor:
         if self._whitelist_dirty:
             self._save_whitelist(force=True)
 
-    def update_whitelist(self, film_title: str, release_year: str, movie_data: Dict, film_url: str = None) -> bool:
+    def update_whitelist(self, film_title: str, release_year: str, movie_data: Dict, film_url: str = None, quiet: bool = False) -> bool:
         """Update whitelist with movie data using URL as primary identifier."""
         if not film_url:
             return False  # Can't update whitelist without URL
@@ -483,7 +483,8 @@ class MovieProcessor:
                 _, row_idx, _ = self.whitelist_lookup[film_url]
                 self.whitelist.at[row_idx, 'Information'] = info_json
                 self.whitelist_lookup[film_url] = (movie_data, row_idx, film_url)
-                print_to_csv(f"📝 Whitelist updated in memory for {film_title}")
+                if not quiet:
+                    print_to_csv(f"📝 Whitelist updated in memory for {film_title}")
                 self._save_whitelist()
                 return True
 
@@ -496,7 +497,8 @@ class MovieProcessor:
             self.whitelist = pd.concat([self.whitelist, new_row], ignore_index=True)
             row_idx = len(self.whitelist) - 1
             self.whitelist_lookup[film_url] = (movie_data, row_idx, film_url)
-            print_to_csv(f"🔗 Whitelist link added in memory for {film_title}")
+            if not quiet:
+                print_to_csv(f"🔗 Whitelist link added in memory for {film_title}")
             self._save_whitelist()
             return True
             
@@ -1225,7 +1227,7 @@ class LetterboxdScraper:
                 
                 # 2% chance to clear the whitelist data for random auditing
                 if random.random() < 0.02:
-                    self.processor.update_whitelist(film_title, release_year, {}, film_url)
+                    self.processor.update_whitelist(film_title, release_year, {}, film_url, quiet=True)
                     print_to_csv(f"🤓 Random data audit scheduled for {film_title} ({release_year})")
                 
                 return True
