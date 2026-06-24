@@ -333,7 +333,7 @@ def main():
         {"url": "https://letterboxd.com/fcbarcelona/list/movies-everyone-should-watch-at-least-once/"},
         {"url": "https://letterboxd.com/prof_ratigan/list/top-5000-films-of-all-time-calculated/"},
         {"url": "https://letterboxd.com/bigbadraj/list/every-movie-ive-seen-ranked/"},
-        {"url": "film_titles_top-100-comedy-specials.json"},
+        {"url": "https://letterboxd.com/official/list/top-100-comedy-specials/"},
         {"url": "https://letterboxd.com/andregps/list/letterboxd-four-favorites-interviews/"},
         {"url": "https://letterboxd.com/mattheweg/list/the-top-rated-movie-of-every-year-by-letterboxd/"},
         {"url": "https://letterboxd.com/rileyaust/list/movies-where-a-5-star-rating-is-most-common/"},
