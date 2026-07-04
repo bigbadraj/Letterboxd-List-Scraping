@@ -489,6 +489,7 @@ def main():
         {"url": "https://letterboxd.com/j_calgaro/list/the-ultimate-film-studies-watchlist-by-the/"},
         {"url": "https://letterboxd.com/bigbadraj/list/wgas-101-funniest-screenplays/"},
         {"url": "https://letterboxd.com/bigbadraj/list/the-house-of-tabulas-30-greatest-films/"},
+        {"url": "https://letterboxd.com/thisisdrew/list/they-shoot-pictures-dont-they-21st-centurys-5/"},
     ]
     
     # Calculate total films across all relevant lists
