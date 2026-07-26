@@ -132,6 +132,7 @@ WHITELIST_PATH = os.path.join(LIST_DIR, 'whitelist.xlsx')
 WHITELIST_SAVE_BATCH_SIZE = 25
 ZERO_REVIEWS_SAVE_BATCH_SIZE = 25
 OFFICIAL_WHITELIST_PATH = os.path.join(LIST_DIR, 'Official Whitelist.xlsx')
+OFFICIAL_BLACKLIST_PATH = os.path.join(LIST_DIR, 'Official Only Blacklist.xlsx')
 ZERO_REVIEWS_PATH = os.path.join(LIST_DIR, 'Zero_Reviews.xlsx')  # Add new path
 CHROME_RESTART_EVERY_PAGES = 12
 PAGE_LOAD_TIMEOUT = 60
@@ -209,7 +210,7 @@ CONTINENTS_COUNTRIES = {
     'Asia': ['State of Palestine', 'Hong Kong', 'Afghanistan', 'Armenia', 'Azerbaijan', 'Bahrain', 'Bangladesh', 'Bhutan', 'Brunei', 'Cambodia', 'China', 'Cyprus', 'Georgia', 'India', 'Indonesia', 'Iran', 'Iraq', 'Israel', 'Japan', 'Jordan', 'Kazakhstan', 'Kuwait', 'Kyrgyzstan', 'Laos', 'Lebanon', 'Malaysia', 'Maldives', 'Mongolia', 'Myanmar', 'Nepal', 'North Korea', 'Oman', 'Pakistan', 'Palestine', 'Philippines', 'Qatar', 'Russia', 'Saudi Arabia', 'Singapore', 'South Korea', 'Sri Lanka', 'Syrian Arab Republic', 'Taiwan', 'Tajikistan', 'Thailand', 'Timor-Leste', 'Turkey', 'Turkmenistan', 'United Arab Emirates', 'Uzbekistan', 'Vietnam', 'Yemen', 'Syria'],
     'Europe': ['East Germany', 'North Macedonia', 'Yugoslavia', 'Serbia and Montenegro', 'Czechoslovakia', 'Czechia', 'USSR', 'Albania', 'Latvia', 'Andorra', 'Liechtenstein', 'Armenia', 'Lithuania', 'Austria', 'Luxembourg', 'Azerbaijan', 'Malta', 'Belarus', 'Moldova', 'Belgium', 'Monaco', 'Bosnia and Herzegovina', 'Montenegro', 'Bulgaria', 'Netherlands', 'Croatia', 'Norway', 'Cyprus', 'Poland', 'Czech Republic', 'Portugal', 'Denmark', 'Romania', 'Estonia', 'Russia', 'Finland', 'San Marino', 'Former Yugoslav Republic of Macedonia', 'Serbia', 'France', 'Slovakia', 'Georgia', 'Slovenia', 'Germany', 'Spain', 'Greece', 'Sweden', 'Hungary', 'Switzerland', 'Iceland', 'Ireland', 'Turkey', 'Italy', 'Ukraine', 'Kosovo', 'UK'],
     'North America': ['Bahamas', 'Guadeloupe', 'Cuba', 'The Bahamas', 'Bermuda', 'Canada', 'The Caribbean', 'Clipperton Island', 'Greenland', 'Mexico', 'Saint Pierre and Miquelon', 'Turks and Caicos Islands', 'USA', 'United States', 'Belize', 'Costa Rica', 'El Salvador', 'Guatemala', 'Honduras', 'Nicaragua', 'Panama', 'Dominican Republic', 'Haiti', 'Jamaica', 'Martinique', 'Netherlands Antilles', 'Puerto Rico'],
-    'Oceania': ['Australia', 'Fiji', 'Kiribati', 'Marshall Islands', 'Micronesia', 'Nauru', 'New Zealand', 'Palau', 'Papua New Guinea', 'Samoa', 'Solomon Islands', 'Tonga', 'Tuvalu', 'Vanuatu', 'French Polynesia'],
+    'Oceania': ['Niue', 'Cook Islands', 'Australia', 'Fiji', 'Kiribati', 'Marshall Islands', 'Micronesia', 'Nauru', 'New Zealand', 'Palau', 'Papua New Guinea', 'Samoa', 'Solomon Islands', 'Tonga', 'Tuvalu', 'Vanuatu', 'French Polynesia'],
     'South America': ['Argentina', 'Bolivia', 'Brazil', 'Chile', 'Colombia', 'Ecuador', 'Guyana', 'Paraguay', 'Peru', 'Suriname', 'Uruguay', 'Bolivarian Republic of Venezuela', 'The Falkland Islands', 'South Georgia and the South Sandwich Islands', 'French Guiana', 'Venezuela'],
 }
 
@@ -427,6 +428,55 @@ class MovieProcessor:
         self._whitelist_pending_writes = 0
         self._zero_reviews_dirty = False
         self._zero_reviews_pending_writes = 0
+        self.official_only_whitelist_urls: Set[str] = set()
+        self.official_only_blacklist_urls: Set[str] = set()
+        self.load_official_only_lists()
+
+    def _normalize_url_for_lookup(self, film_url: Optional[str]) -> str:
+        """Produce a stable lookup key for whitelist and official-only list URLs."""
+        if not film_url:
+            return ''
+        normalized = str(film_url).strip()
+        if not normalized:
+            return ''
+        normalized = normalized.split('?')[0].rstrip('/')
+        if not normalized.startswith('http'):
+            normalized = f'https://letterboxd.com{normalized if normalized.startswith("/") else "/" + normalized}'
+        if normalized.startswith('http://'):
+            normalized = 'https://' + normalized[len('http://'):]
+        return normalized.lower()
+
+    def load_official_only_lists(self):
+        """Load the tiny official-only whitelist/blacklist Excel files into fast URL sets."""
+        def _load_urls(path: str) -> Set[str]:
+            if not os.path.exists(path):
+                return set()
+            try:
+                df = pd.read_excel(path, header=0)
+            except Exception:
+                return set()
+            if 'Link' not in df.columns:
+                return set()
+            urls = set()
+            for link in df['Link'].fillna('').astype(str).str.strip():
+                normalized = self._normalize_url_for_lookup(link)
+                if normalized:
+                    urls.add(normalized)
+            return urls
+
+        self.official_only_whitelist_urls = _load_urls(OFFICIAL_WHITELIST_PATH)
+        self.official_only_blacklist_urls = _load_urls(OFFICIAL_BLACKLIST_PATH)
+
+    def get_whitelist_override_mode(self, film_url: Optional[str]) -> Optional[str]:
+        """Return 'official' for official-only whitelist entries, 'normal' for official blacklist entries, or None."""
+        if not film_url:
+            return None
+        normalized = self._normalize_url_for_lookup(film_url)
+        if normalized in self.official_only_whitelist_urls:
+            return 'official'
+        if normalized in self.official_only_blacklist_urls:
+            return 'normal'
+        return None
 
     def load_whitelist(self):
         """Load and initialize the whitelist data."""
@@ -528,6 +578,10 @@ class MovieProcessor:
             print_to_csv("❌ Info is not a dictionary, skipping")
             return
 
+        override_mode = self.get_whitelist_override_mode(film_url)
+        should_include_general_lists = override_mode != 'official'
+        should_include_official_lists = override_mode != 'normal'
+
         # Create film_data entry
         film_data = {
             'Title': info.get('Title'),
@@ -535,8 +589,9 @@ class MovieProcessor:
             'tmdbID': info.get('tmdbID')
         }
 
-        # Add to film data
-        self.film_data.append(film_data)
+        # Add to film data only for normal/general processing
+        if should_include_general_lists:
+            self.film_data.append(film_data)
 
         # Process runtime category if we have runtime info
         runtime = info.get('Runtime')
@@ -555,7 +610,12 @@ class MovieProcessor:
                     categories.append('100_Minutes_or_Less')
                 if runtime > 150:
                     categories.append('150_Minutes_or_More')
-        
+
+            if override_mode == 'official':
+                categories = [category for category in categories if category in OFFICIAL_RUNTIME_CATEGORIES]
+            elif override_mode == 'normal':
+                categories = [category for category in categories if category not in OFFICIAL_RUNTIME_CATEGORIES]
+
             for category in categories:
                 # Official runtime lists require 5000+ ratings
                 if category in OFFICIAL_RUNTIME_CATEGORIES and info.get('RatingCount', 0) < MIN_RATING_COUNT_OFFICIAL:
@@ -563,6 +623,9 @@ class MovieProcessor:
                 if add_to_runtime_stats(category, info.get('Title'), info.get('Year'), info.get('tmdbID'), film_url):
                     if category not in OFFICIAL_RUNTIME_CATEGORIES:
                         self.update_runtime_statistics(info.get('Title'), info.get('Year'), info.get('tmdbID'), None, category)
+
+        if not should_include_general_lists:
+            return
 
         # Process MAX_MOVIES_5000 using centralized function
         if add_to_max_movies_5000(info.get('Title'), info.get('Year'), info.get('tmdbID'), film_url):
@@ -2102,6 +2165,12 @@ class LetterboxdScraper:
                 print_to_csv(f"⚠️ {film_title} was already processed in this session. Skipping.")
                 return False
                         
+            override_mode = self.processor.get_whitelist_override_mode(film_url)
+            if override_mode == 'official':
+                print_to_csv(f"🟦 {film_title} is marked for official-only whitelist processing.")
+            elif override_mode == 'normal':
+                print_to_csv(f"🟨 {film_title} is marked for normal-only whitelist processing.")
+
             # Process using URL as primary identifier
             if self.processor.is_whitelisted(None, None, film_url):
                 # If info is empty or incomplete, collect fresh data
@@ -2321,6 +2390,12 @@ class LetterboxdScraper:
                 
                 # Process the whitelist information regardless of MAX_MOVIES_5000 limit
                 self.processor.process_whitelist_info(info, film_url)
+                if override_mode == 'official':
+                    self.processed_movies_on_current_page.add(film_url)
+                    self.reset_crash_counter()
+                    print_to_csv(f"✅ Processed official-only whitelist data for {film_title}")
+                    return True
+
                 self.valid_movies_count += 1
                 # Track this movie as processed on current page for recovery purposes
                 self.processed_movies_on_current_page.add(film_url)

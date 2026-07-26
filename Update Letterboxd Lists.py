@@ -277,7 +277,7 @@ def update_letterboxd_lists():
                 driver.find_element(By.NAME, "username").send_keys(username)
                 driver.find_element(By.NAME, "password").send_keys(password)
                 driver.find_element(By.NAME, "password").send_keys(Keys.RETURN)
-                time.sleep(10)
+                time.sleep(20)
             else:
                 log_and_print("✅ Sign-in menu not present — already signed in, continuing.")
         except NoSuchWindowException as e:

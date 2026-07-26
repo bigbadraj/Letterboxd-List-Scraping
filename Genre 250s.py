@@ -152,12 +152,19 @@ BLACKLIST_PATH = os.path.join(LIST_DIR, 'blacklist.xlsx')
 WHITELIST_PATH = os.path.join(LIST_DIR, 'whitelist.xlsx')
 WHITELIST_SAVE_BATCH_SIZE = 25
 ZERO_REVIEWS_SAVE_BATCH_SIZE = 25
+OFFICIAL_WHITELIST_PATH = os.path.join(LIST_DIR, 'Official Whitelist.xlsx')
+OFFICIAL_BLACKLIST_PATH = os.path.join(LIST_DIR, 'Official Only Blacklist.xlsx')
 ZERO_REVIEWS_PATH = os.path.join(LIST_DIR, 'Zero_Reviews.xlsx')  # Add new path
 CHROME_RESTART_EVERY_PAGES = 12
 PAGE_LOAD_TIMEOUT = 60
 LISTING_FETCH_TIMEOUT = 30
 FILM_FETCH_TIMEOUT = 20
 BOUNDARY_HEAL_MAX_RETRIES = 5
+LISTING_PAGE_INNER_RETRIES = 30
+LISTING_CONTAINER_INNER_RETRIES = 35
+LISTING_RESTART_EVERY_CYCLES = 4  # full Chrome restart after this many failed page cycles
+LISTING_SHORT_PAGE_STABLE_READS = 3  # consecutive matching sub-72 counts before treating as last page
+HUMAN_DELAY_BETWEEN_PAGES = (0, 0)  # seconds between listing pages; set (0, 0) to disable
 # Routine skips are counted but not kept in memory (music can reject thousands per run).
 ROUTINE_REJECTION_REASONS = frozenset({
     'Zero reviews',
@@ -411,6 +418,55 @@ class MovieProcessor:
         self._whitelist_pending_writes = 0
         self._zero_reviews_dirty = False
         self._zero_reviews_pending_writes = 0
+        self.official_only_whitelist_urls: Set[str] = set()
+        self.official_only_blacklist_urls: Set[str] = set()
+        self.load_official_only_lists()
+
+    def _normalize_url_for_lookup(self, film_url: Optional[str]) -> str:
+        """Produce a stable lookup key for whitelist and official-only list URLs."""
+        if not film_url:
+            return ''
+        normalized = str(film_url).strip()
+        if not normalized:
+            return ''
+        normalized = normalized.split('?')[0].rstrip('/')
+        if not normalized.startswith('http'):
+            normalized = f'https://letterboxd.com{normalized if normalized.startswith("/") else "/" + normalized}'
+        if normalized.startswith('http://'):
+            normalized = 'https://' + normalized[len('http://'):]
+        return normalized.lower()
+
+    def load_official_only_lists(self):
+        """Load the tiny official-only whitelist/blacklist Excel files into fast URL sets."""
+        def _load_urls(path: str) -> Set[str]:
+            if not os.path.exists(path):
+                return set()
+            try:
+                df = pd.read_excel(path, header=0)
+            except Exception:
+                return set()
+            if 'Link' not in df.columns:
+                return set()
+            urls = set()
+            for link in df['Link'].fillna('').astype(str).str.strip():
+                normalized = self._normalize_url_for_lookup(link)
+                if normalized:
+                    urls.add(normalized)
+            return urls
+
+        self.official_only_whitelist_urls = _load_urls(OFFICIAL_WHITELIST_PATH)
+        self.official_only_blacklist_urls = _load_urls(OFFICIAL_BLACKLIST_PATH)
+
+    def get_whitelist_override_mode(self, film_url: Optional[str]) -> Optional[str]:
+        """Return 'official' for official-only whitelist entries, 'normal' for official blacklist entries, or None."""
+        if not film_url:
+            return None
+        normalized = self._normalize_url_for_lookup(film_url)
+        if normalized in self.official_only_whitelist_urls:
+            return 'official'
+        if normalized in self.official_only_blacklist_urls:
+            return 'normal'
+        return None
 
     def load_whitelist(self):
         """Load and initialize the whitelist data."""
@@ -522,6 +578,9 @@ class MovieProcessor:
             print_to_csv("❌ Info is not a dictionary, skipping")
             return
 
+        override_mode = self.get_whitelist_override_mode(film_url)
+        should_include_general_lists = override_mode != 'official'
+
         # Create film_data entry
         film_data = {
             'Title': info.get('Title'),
@@ -529,8 +588,11 @@ class MovieProcessor:
             'tmdbID': info.get('tmdbID')
         }
 
-        # Add to film data
-        self.film_data.append(film_data)
+        if should_include_general_lists:
+            self.film_data.append(film_data)
+
+        if not should_include_general_lists:
+            return
 
         # Process MAX_MOVIES using centralized function - only call once
         if add_to_MAX_MOVIES(info.get('Title'), info.get('Year'), info.get('tmdbID'), film_url):
@@ -958,6 +1020,25 @@ def format_time(seconds):
     else:
         return f"{seconds}s"
 
+
+def calculate_retry_delay(attempt: int, base_delay: float = 5, max_delay: float = 300) -> float:
+    """Calculate exponential backoff delay with jitter."""
+    delay = min(base_delay * (2 ** attempt), max_delay)
+    jitter = delay * 0.25 * (2 * random.random() - 1)
+    return max(1, delay + jitter)
+
+
+def is_network_error(error: Exception) -> bool:
+    """Check if the error is network-related."""
+    error_str = str(error).lower()
+    network_keywords = [
+        'timeout', 'connection', 'network', 'dns', 'resolve', 'unreachable',
+        'refused', 'reset', 'broken pipe', 'ssl', 'certificate', 'handshake',
+        'proxy', 'gateway', 'server error', 'bad gateway', 'service unavailable',
+    ]
+    return any(keyword in error_str for keyword in network_keywords)
+
+
 def is_retryable_error(error):
     """Determine if an error should be retried based on error type and message."""
     error_str = str(error).lower()
@@ -1117,6 +1198,10 @@ class LetterboxdScraper:
         self.rejected_movies_count = 0  # Add counter for rejected movies
         self._listing_last_url_prev_page: Optional[str] = None
         self._pages_since_driver_start = 0
+        self.current_url = None
+        self.last_successful_page = 1
+        self.recovery_attempts = 0
+        self.max_recovery_attempts = 10
         print_to_csv("Initialized Letterboxd Scraper.")
 
     def _record_rejection(self, film_title: str, release_year: str, tmdb_id, reason: str):
@@ -1154,53 +1239,236 @@ class LetterboxdScraper:
             pass
         return None
 
-    def _load_listing_page(self, url: str, page_num: int) -> Tuple[List[dict], bool]:
-        """Load a genre listing page via Chrome (Letterboxd blocks plain HTTP on browse pages)."""
-        page_retries = 20
-        for retry in range(page_retries):
+    def _listing_page_has_next(self) -> bool:
+        """True if the current listing page has a paginate 'next' link."""
+        try:
+            return bool(self.driver.find_elements(By.CSS_SELECTOR, 'div.paginate-pages a.next'))
+        except Exception:
+            return True
+
+    def _collect_listing_entries_from_page(self, poster_count: int) -> List[dict]:
+        """
+        Parse the current listing DOM. Tries live Selenium elements first, then
+        falls back to static HTML parsing (avoids stale-element failure loops).
+        """
+        film_containers = self.driver.find_elements(By.CSS_SELECTOR, 'li.posteritem')
+        if len(film_containers) != poster_count:
+            poster_count = len(film_containers)
+
+        try:
+            selenium_entries = self._collect_film_entries_from_poster_containers(film_containers)
+        except RuntimeError:
+            raise
+
+        html_entries = parse_listing_films_from_html(self.driver.page_source, self.processor)
+
+        if poster_count > 0:
+            if len(html_entries) >= poster_count:
+                if len(html_entries) > len(selenium_entries):
+                    print_to_csv(
+                        f"📄 HTML fallback parsed {len(html_entries)} entries "
+                        f"(Selenium got {len(selenium_entries)}, expected {poster_count})"
+                    )
+                return html_entries[:poster_count]
+            if len(selenium_entries) >= poster_count:
+                return selenium_entries[:poster_count]
+
+        if len(html_entries) > len(selenium_entries):
+            print_to_csv(
+                f"📄 HTML fallback parsed {len(html_entries)} entries "
+                f"(Selenium got {len(selenium_entries)})"
+            )
+            return html_entries
+
+        return selenium_entries
+
+    def _attempt_listing_page_cycle(
+        self, page_num: int, url: str, cycle: int
+    ) -> Tuple[Optional[List[dict]], Optional[str]]:
+        """
+        One load/stabilize/parse attempt for a listing page.
+        Returns (film_data, None) on success, (None, reason) on retryable failure.
+        Raises RuntimeError if browser recovery fails fatally.
+        """
+        if not self.is_browser_responsive():
+            print_to_csv("🚨 Browser crash detected! Attempting recovery...")
+            if not self.recover_browser():
+                raise RuntimeError("Browser recovery failed")
+
+        self.driver.get(url)
+
+        try:
+            page_title = self.driver.title
+            print_to_csv(f"Page loaded: {page_title}")
+            if "not found" in page_title.lower() or "error" in page_title.lower():
+                return [], None
+        except Exception as e:
+            print_to_csv(f"Warning: Could not get page title: {str(e)}")
+            if not self.is_browser_responsive():
+                print_to_csv("🚨 Browser crash detected during page load! Attempting recovery...")
+                if not self.recover_browser():
+                    raise RuntimeError("Browser recovery failed")
+
+        WebDriverWait(self.driver, 15).until(
+            EC.presence_of_element_located((By.CSS_SELECTOR, 'li.posteritem'))
+        )
+
+        current_url = self.driver.current_url
+        if current_url != url and "page" not in current_url:
+            print_to_csv(f"⚠️ Page redirected from {url} to {current_url}")
+
+        self.update_state_tracking(page_num, url)
+        if HUMAN_DELAY_BETWEEN_PAGES[1] > 0:
+            time.sleep(random.uniform(*HUMAN_DELAY_BETWEEN_PAGES))
+
+        has_next = self._listing_page_has_next()
+        stable_short_count: Optional[int] = None
+        stable_short_streak = 0
+        poster_count = 0
+
+        for retry in range(LISTING_CONTAINER_INNER_RETRIES):
+            if not self.is_browser_responsive():
+                print_to_csv("🚨 Browser crash detected while finding containers! Attempting recovery...")
+                if not self.recover_browser():
+                    raise RuntimeError("Browser recovery failed")
+
             try:
+                film_containers = WebDriverWait(self.driver, 15).until(
+                    EC.presence_of_all_elements_located((By.CSS_SELECTOR, 'li.posteritem'))
+                )
+                poster_count = len(film_containers)
+                print_to_csv(f"Found {poster_count} film containers on attempt {retry + 1}")
+
+                if poster_count == EXPECTED_LISTING_POSTERS_PER_PAGE:
+                    print_to_csv(f"✅ Found {poster_count} containers (full page), proceeding...")
+                    break
+
+                if not has_next and poster_count > 0:
+                    if stable_short_count == poster_count:
+                        stable_short_streak += 1
+                    else:
+                        stable_short_count = poster_count
+                        stable_short_streak = 1
+                    if stable_short_streak >= LISTING_SHORT_PAGE_STABLE_READS:
+                        print_to_csv(
+                            f"✅ Last listing page: stable count of {poster_count} posters "
+                            f"({LISTING_SHORT_PAGE_STABLE_READS} consecutive reads)"
+                        )
+                        break
+
+                print_to_csv(
+                    f"⚠️ Expected {EXPECTED_LISTING_POSTERS_PER_PAGE} posters, found {poster_count}; "
+                    f"reloading listing page... (Attempt {retry + 1}/{LISTING_CONTAINER_INNER_RETRIES})"
+                )
+                delay = calculate_retry_delay(retry, base_delay=3)
+                time.sleep(delay)
                 self.driver.get(url)
-                try:
-                    page_title = self.driver.title
-                    if "not found" in page_title.lower() or "error" in page_title.lower():
-                        print_to_csv(f"❌ Page {page_num} appears to be an error page: {page_title}")
-                        return [], False
-                except Exception:
-                    pass
-                WebDriverWait(self.driver, 10).until(
+                WebDriverWait(self.driver, 15).until(
                     EC.presence_of_element_located((By.CSS_SELECTOR, 'li.posteritem'))
                 )
-                film_containers = self.driver.find_elements(By.CSS_SELECTOR, 'li.posteritem')
-                if len(film_containers) == EXPECTED_LISTING_POSTERS_PER_PAGE:
-                    print_to_csv(f"✅ Found {len(film_containers)} containers (full page), proceeding...")
-                    return self._build_film_data_list_from_containers(film_containers), True
-                print_to_csv(
-                    f"⚠️ Browser listing page {page_num}: expected {EXPECTED_LISTING_POSTERS_PER_PAGE} "
-                    f"posters, found {len(film_containers)}; retry {retry + 1}/{page_retries}"
-                )
-                time.sleep(3)
-                self.driver.get(url)
                 time.sleep(2)
             except Exception as e:
-                err = str(e).lower()
-                if "no such window" in err or "target window already closed" in err:
-                    self._restart_driver("browser window closed")
-                if retry == page_retries - 1:
-                    print_to_csv(f"❌ Failed to load page {page_num} after {page_retries} attempts: {e}")
-                    return [], False
-                print_to_csv(f"Retry {retry + 1}/{page_retries} loading page {page_num}: {e}")
-                if "timeout" in err or "connection" in err:
-                    print_to_csv("⚠️ Network issue detected, waiting longer before retry...")
-                    time.sleep(10)
+                if not self.is_browser_responsive():
+                    print_to_csv("🚨 Browser crash detected while finding containers! Attempting recovery...")
+                    if not self.recover_browser():
+                        raise RuntimeError("Browser recovery failed")
+                    continue
+
+                if retry == LISTING_CONTAINER_INNER_RETRIES - 1:
+                    return None, f"container wait failed: {e}"
+
+                delay = calculate_retry_delay(retry, base_delay=3)
+                if is_network_error(e):
+                    print_to_csv(f"🌐 Network error finding containers: {str(e)}")
                 else:
-                    time.sleep(2)
-        return [], False
+                    print_to_csv(f"Retry {retry + 1}/{LISTING_CONTAINER_INNER_RETRIES} finding containers: {str(e)}")
+                time.sleep(delay)
+                try:
+                    self.driver.refresh()
+                except Exception:
+                    self.driver.get(url)
+                time.sleep(2)
+
+        if poster_count == 0:
+            return [], None
+
+        if poster_count != EXPECTED_LISTING_POSTERS_PER_PAGE and has_next:
+            return None, (
+                f"only {poster_count}/{EXPECTED_LISTING_POSTERS_PER_PAGE} posters on a page that has a 'next' link"
+            )
+
+        print_to_csv(f"\n{f' Page {page_num} ':=^100}")
+        film_data_list = self._collect_listing_entries_from_page(poster_count)
+
+        if len(film_data_list) < poster_count:
+            return None, (
+                f"parsed {len(film_data_list)}/{poster_count} entries on page {page_num} (cycle {cycle})"
+            )
+
+        print_to_csv(f"Collected {len(film_data_list)} movies from page {page_num}")
+        return film_data_list, None
+
+    def _load_listing_page_and_collect(self, page_num: int) -> Tuple[Optional[List[dict]], bool]:
+        """
+        Load a listing page and collect all poster rows. Never skips a page with films;
+        retries with backoff, HTML fallback, and periodic Chrome restarts until successful.
+        Returns (entries, abort_scrape). entries is None only when abort_scrape is True.
+        """
+        url = f'{self.base_url}page/{page_num}/'
+        print_to_csv(f"\nLoading page {page_num}: {url}")
+
+        cycle = 0
+        while True:
+            cycle += 1
+
+            for retry in range(LISTING_PAGE_INNER_RETRIES):
+                last_error: Optional[Exception] = None
+                try:
+                    film_data_list, failure_reason = self._attempt_listing_page_cycle(page_num, url, cycle)
+                    if failure_reason is None:
+                        return film_data_list, False
+                    print_to_csv(f"⚠️ Page {page_num} not ready: {failure_reason}")
+                except RuntimeError:
+                    return None, True
+                except Exception as e:
+                    last_error = e
+                    err = str(e).lower()
+                    if "no such window" in err or "target window already closed" in err:
+                        self._restart_driver("browser window closed during listing load")
+                    elif not self.is_browser_responsive():
+                        if not self.recover_browser():
+                            return None, True
+                    else:
+                        print_to_csv(f"⚠️ Page {page_num} load error: {e}")
+
+                delay = calculate_retry_delay(retry)
+                if last_error is not None and is_network_error(last_error):
+                    print_to_csv(f"🌐 Network error on page {page_num} - waiting {delay:.1f}s...")
+                else:
+                    print_to_csv(
+                        f"Retry {retry + 1}/{LISTING_PAGE_INNER_RETRIES} for page {page_num} "
+                        f"(cycle {cycle}) - waiting {delay:.1f}s..."
+                    )
+                time.sleep(delay)
+
+            if cycle % LISTING_RESTART_EVERY_CYCLES == 0:
+                self._restart_driver(f"listing page {page_num} failed {cycle} full cycles")
+            else:
+                wait = min(60, 10 * cycle)
+                print_to_csv(
+                    f"⏳ Page {page_num}: completed cycle {cycle} without success; "
+                    f"waiting {wait}s before next cycle..."
+                )
+                time.sleep(wait)
 
     def _fetch_film_html(self, film_url: str) -> Optional[str]:
         html = self._fetch_http(film_url, FILM_FETCH_TIMEOUT)
         if html and 'ratingCount' in html:
             return html
         try:
+            if not self.is_browser_responsive():
+                if not self.recover_browser():
+                    return None
             self.driver.get(film_url)
             WebDriverWait(self.driver, 10).until(
                 EC.presence_of_element_located((By.CSS_SELECTOR, 'meta[property="og:title"]'))
@@ -1229,13 +1497,75 @@ class LetterboxdScraper:
             return u.split("/film/", 1)[1].strip("/")
         return u
 
-    def _build_film_data_list_from_containers(self, film_containers) -> List[dict]:
+    def is_browser_responsive(self):
+        """Check if the browser is still responsive by attempting a simple operation."""
+        try:
+            _ = self.driver.current_url
+            _ = self.driver.title
+            return True
+        except Exception as e:
+            print_to_csv(f"Browser not responsive: {str(e)}")
+            return False
+
+    def recover_browser(self):
+        """Recover from browser crash by creating a new driver and restoring state."""
+        if self.recovery_attempts >= self.max_recovery_attempts:
+            print_to_csv(f"❌ Maximum recovery attempts ({self.max_recovery_attempts}) reached. Cannot recover browser.")
+            return False
+
+        self.recovery_attempts += 1
+        wait_time = min(30, 5 + (self.recovery_attempts * 10))
+        print_to_csv(f"🔄 Attempting browser recovery (attempt {self.recovery_attempts}/{self.max_recovery_attempts})...")
+        print_to_csv(f"⏳ Waiting {wait_time} seconds before attempting recovery...")
+        time.sleep(wait_time)
+
+        try:
+            try:
+                self.driver.quit()
+            except Exception:
+                pass
+
+            print_to_csv("Creating new browser instance...")
+            self.driver = setup_webdriver()
+            self._pages_since_driver_start = 0
+
+            recovery_page = self.page_number
+            recovery_url = f'{self.base_url}page/{recovery_page}/'
+            print_to_csv(f"Navigating to recovery page: {recovery_url}")
+            print_to_csv("📝 Note: Duplicate prevention will skip any movies already processed in this session.")
+
+            self.driver.get(recovery_url)
+            WebDriverWait(self.driver, 15).until(
+                EC.presence_of_element_located((By.CSS_SELECTOR, 'li.posteritem'))
+            )
+
+            self.current_url = recovery_url
+            print_to_csv(f"✅ Browser recovery successful! Resumed from page {recovery_page}")
+            return True
+        except Exception as e:
+            print_to_csv(f"❌ Browser recovery failed: {str(e)}")
+            return False
+
+    def update_state_tracking(self, page_number, url):
+        """Update state tracking for recovery purposes."""
+        self.page_number = page_number
+        self.current_url = url
+        self.last_successful_page = page_number
+
+    def _collect_film_entries_from_poster_containers(self, film_containers) -> List[dict]:
+        """Parse li.posteritem elements into the same dicts used by scrape_movies."""
         film_data_list: List[dict] = []
         for container in film_containers:
             try:
+                if not self.is_browser_responsive():
+                    print_to_csv("🚨 Browser crash detected while processing movies! Attempting recovery...")
+                    if not self.recover_browser():
+                        print_to_csv("❌ Browser recovery failed. Exiting scraping.")
+                        raise RuntimeError("Browser recovery failed")
+                    break
                 anchor = container.find_element(By.CSS_SELECTOR, 'a[href*="/film/"]')
                 film_url = anchor.get_attribute('href')
-                film_title = None
+
                 film_title = container.get_attribute('data-item-full-display-name')
                 if not film_title:
                     film_title = container.get_attribute('data-item-name')
@@ -1243,6 +1573,7 @@ class LetterboxdScraper:
                         full_name = container.get_attribute('data-item-full-display-name')
                         if full_name and '(' in full_name and ')' in full_name:
                             film_title = full_name
+
                 if not film_title:
                     anchor_title = anchor.get_attribute('title')
                     if anchor_title:
@@ -1251,6 +1582,7 @@ class LetterboxdScraper:
                             film_title = ' '.join(title_parts[:-1])
                         else:
                             film_title = anchor_title
+
                 if not film_title:
                     try:
                         img = container.find_element(By.CSS_SELECTOR, 'img')
@@ -1259,22 +1591,37 @@ class LetterboxdScraper:
                             film_title = img_alt.replace(' poster', '').strip()
                     except Exception:
                         pass
+
                 if not film_title and film_url:
                     url_parts = film_url.split('/film/')
                     if len(url_parts) > 1:
                         title_from_url = url_parts[1].rstrip('/')
                         film_title = title_from_url.replace('-', ' ').replace('_', ' ').title()
+
                 if film_title and film_url:
                     film_title = film_title.strip()
                     release_year = None
+
                     if '(' in film_title and ')' in film_title:
-                        release_year = film_title.split('(')[-1].split(')')[0].strip()
+                        year_part = film_title.split('(')[-1].split(')')[0].strip()
+                        if year_part.isdigit() and len(year_part) == 4:
+                            release_year = year_part
+                            film_title = film_title.split('(')[0].strip()
+
+                    if not release_year:
+                        title_parts = film_title.split()
+                        if len(title_parts) > 1:
+                            last_part = title_parts[-1].strip()
+                            if last_part.isdigit() and len(last_part) == 4 and 1900 <= int(last_part) <= 2030:
+                                release_year = last_part
+                                film_title = ' '.join(title_parts[:-1]).strip()
+
                     is_blacklisted = self.processor.is_blacklisted(None, None, film_url, None)
                     film_data_list.append({
                         'title': film_title,
                         'url': film_url,
                         'is_blacklisted': is_blacklisted,
-                        'release_year': release_year
+                        'release_year': release_year,
                     })
                 else:
                     print_to_csv(f"Missing data for movie - Title: {film_title}, URL: {film_url}")
@@ -1287,6 +1634,8 @@ class LetterboxdScraper:
                     except Exception:
                         pass
                     self.processor.rejected_data.append([film_title, None, None, 'Missing title or URL'])
+            except RuntimeError:
+                raise
             except Exception as e:
                 print_to_csv(f"Error collecting film data: {str(e)}")
                 continue
@@ -1464,7 +1813,12 @@ class LetterboxdScraper:
                         return False
                 
                 # Process the whitelist information
+                override_mode = self.processor.get_whitelist_override_mode(film_url)
                 self.processor.process_whitelist_info(info, film_url)
+                if override_mode == 'official':
+                    print_to_csv(f"✅ Processed official-only whitelist data for {film_title}")
+                    return True
+
                 self.valid_movies_count += 1
                 print_to_csv(f"✅ Processed whitelist data for {film_title} ({self.valid_movies_count}/{MAX_MOVIES})")
                 
@@ -1637,7 +1991,7 @@ class LetterboxdScraper:
         return False
 
     def _trim_listing_boundary_overlap(
-        self, film_data_list: List[dict], page_num: int, listing_url: str
+        self, film_data_list: List[dict], page_num: int
     ) -> List[dict]:
         """Drop duplicate boundary rows without re-scraping the previous page."""
         if page_num <= 1 or not film_data_list or not self._listing_last_url_prev_page:
@@ -1658,12 +2012,15 @@ class LetterboxdScraper:
             return trimmed
 
         for retry in range(BOUNDARY_HEAL_MAX_RETRIES):
-            refreshed, ok = self._load_listing_page(listing_url, page_num)
-            if ok and refreshed:
-                return [
+            refreshed, abort = self._load_listing_page_and_collect(page_num)
+            if abort:
+                return film_data_list
+            if refreshed:
+                result = [
                     fd for fd in refreshed
                     if self._normalize_listing_film_url(fd['url']) != last_norm
-                ] or refreshed
+                ]
+                return result or refreshed
             time.sleep(3)
         print_to_csv("⚠️ Boundary trim: could not reload current page; using original listing.")
         return film_data_list
@@ -1679,27 +2036,17 @@ class LetterboxdScraper:
                 break
 
             self._maybe_restart_driver()
-            url = f'{self.base_url}page/{self.page_number}/'
-            print_to_csv(f"\nLoading page {self.page_number}: {url}")
-
-            film_data_list, ok = self._load_listing_page(url, self.page_number)
-            if not ok:
-                print_to_csv(f"Moving to next page and continuing...")
-                self.page_number += 1
-                continue
-
-            self._pages_since_driver_start += 1
-            print_to_csv(f"\n{f' Page {self.page_number} ':=^100}")
-            print_to_csv(f"Collected {len(film_data_list)} movies from page {self.page_number}")
+            cur_page = self.page_number
+            film_data_list, abort = self._load_listing_page_and_collect(cur_page)
+            if abort:
+                return
 
             if not film_data_list:
-                print_to_csv("No valid film data collected. Moving to next page...")
-                self.page_number += 1
-                continue
+                print_to_csv(f"No films on page {cur_page} — end of genre listing.")
+                break
 
-            film_data_list = self._trim_listing_boundary_overlap(
-                film_data_list, self.page_number, url
-            )
+            self._pages_since_driver_start += 1
+            film_data_list = self._trim_listing_boundary_overlap(film_data_list, cur_page)
 
             for film_data in film_data_list:
                 norm_url = self._normalize_listing_film_url(film_data['url'])
@@ -2124,8 +2471,13 @@ class LetterboxdScraper:
             if self.processor.is_whitelisted(film_title, release_year):
                 if self.processor.update_whitelist(film_title, release_year, movie_data, film_url):
                     # Process through all output channels
+                    override_mode = self.processor.get_whitelist_override_mode(film_url)
                     self.processor.process_whitelist_info(movie_data, film_url)
                     
+                    if override_mode == 'official':
+                        print_to_csv(f"✅ Processed official-only whitelist data for {film_title}")
+                        return movie_data
+
                     self.valid_movies_count += 1
                     print_to_csv(f"✅ Processed whitelist data for {film_title} ({self.valid_movies_count}/{MAX_MOVIES})")
                     return movie_data
@@ -2159,6 +2511,9 @@ class LetterboxdScraper:
         self.rejected_movies_count = 0
         self._listing_last_url_prev_page = None
         self._pages_since_driver_start = 0
+        self.current_url = None
+        self.last_successful_page = 1
+        self.recovery_attempts = 0
         # Reset processor data for new genre/sort type
         self.processor.film_data = []
         self.processor.rejected_data = []
@@ -2210,7 +2565,7 @@ def main():
     """
     global current_scraper
     genres = ["action", "adventure", "animation", "comedy", "crime", "drama", "family", "fantasy", "history", "horror", "music", "mystery", "romance", "science-fiction", "thriller", "war", "western"]  # List of genres to iterate through
-    # genres =['western'] # Test only some genres
+    # genres =['family'] # Test only some genres
 
     start_time = time.time()
     MAX_RETRIES = 10  # Maximum number of retries for each genre/sort combination

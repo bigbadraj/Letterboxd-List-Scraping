@@ -1,6 +1,6 @@
 """
-Scrape two official runtime Letterboxd lists in list order, trim CSV backups to
-250 films, and compare to the CSVs in Outputs.
+Scrape official Letterboxd lists in list order, back up CSVs in Outputs,
+trim CSVs to the list cap, and compare to the live site.
 
 The CSV is treated as the *current* list; the website scrape may lag (e.g. last
 week’s order). *In* = films in the CSV but not on the scraped page; *Out* = films
@@ -14,8 +14,9 @@ import csv
 import html
 import io
 import os
+import shutil
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import date
+from datetime import date, datetime
 from time import sleep
 from typing import List, Optional, Sequence, Tuple
 
@@ -87,6 +88,7 @@ def get_paths() -> dict:
 
 PATHS = get_paths()
 OUTPUT_DIR = PATHS["output_dir"]
+BACKUP_DIR = os.path.join(OUTPUT_DIR, "Backups")
 
 
 def read_csv_file_text(path: str) -> str:
@@ -236,6 +238,16 @@ def trim_csv_to_max_films(csv_path: str, max_data_rows: int) -> None:
         return
     with open(csv_path, "w", encoding="utf-8", newline="") as f:
         csv.writer(f).writerows(rows[:limit])
+
+
+def backup_csv_before_update(csv_path: str, backup_dir: str = BACKUP_DIR) -> str:
+    """Copy a CSV to Outputs/Backups before it is modified; return backup path."""
+    os.makedirs(backup_dir, exist_ok=True)
+    base, ext = os.path.splitext(os.path.basename(csv_path))
+    stamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
+    backup_path = os.path.join(backup_dir, f"{base}.backup.{stamp}{ext}")
+    shutil.copy2(csv_path, backup_path)
+    return backup_path
 
 
 def load_csv_rows(csv_path: str) -> Tuple[List[dict], List[str]]:
@@ -464,6 +476,7 @@ def blockquote_html(
 
 def run() -> str:
     os.makedirs(OUTPUT_DIR, exist_ok=True)
+    os.makedirs(BACKUP_DIR, exist_ok=True)
     session = create_session()
     chunks: List[str] = []
     as_of = date.today()
@@ -472,6 +485,9 @@ def run() -> str:
         csv_path = os.path.join(OUTPUT_DIR, csv_name)
         if not os.path.isfile(csv_path):
             raise FileNotFoundError(f"Missing CSV: {csv_path}")
+
+        backup_path = backup_csv_before_update(csv_path)
+        print(f"Backed up {csv_name} -> {os.path.relpath(backup_path, OUTPUT_DIR)}")
 
         trim_csv_to_max_films(csv_path, max_films)
         old_rows, fieldnames = load_csv_rows(csv_path)
