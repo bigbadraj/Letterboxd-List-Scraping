@@ -1,3 +1,4 @@
+import sys
 import time
 import undetected_chromedriver as uc
 from selenium.webdriver.common.by import By
@@ -258,28 +259,40 @@ def update_letterboxd_lists():
         driver = uc.Chrome(options=options, use_subprocess=True, version_main=chrome_major)
     else:
         driver = uc.Chrome(options=options, use_subprocess=True)
-    time.sleep(1)  # let Chrome finish starting before navigation
+    time.sleep(5)  # let Chrome finish starting before navigation
 
     try:
         log_and_print("✅ Navigating to Letterboxd homepage.")
-        driver.get("https://letterboxd.com/")
-        time.sleep(2)
-
-        # Only sign in if the sign-in menu is present; otherwise assume already signed in
+        sign_in_attempts = 5
+        signed_in = False
         try:
-            sign_in_elements = driver.find_elements(By.CSS_SELECTOR, ".sign-in-menu a")
-            if sign_in_elements:
-                log_and_print("✅ Clicking on the 'Sign in' button.")
-                sign_in_elements[0].click()
-                time.sleep(1)
+            for attempt in range(1, sign_in_attempts + 1):
+                driver.get("https://letterboxd.com/")
+                time.sleep(5)
 
-                log_and_print("✅ Entering username and password.")
-                driver.find_element(By.NAME, "username").send_keys(username)
-                driver.find_element(By.NAME, "password").send_keys(password)
-                driver.find_element(By.NAME, "password").send_keys(Keys.RETURN)
-                time.sleep(20)
-            else:
-                log_and_print("✅ Sign-in menu not present — already signed in, continuing.")
+                sign_in_elements = driver.find_elements(By.CSS_SELECTOR, ".sign-in-menu a")
+                if sign_in_elements:
+                    log_and_print("✅ Clicking on the 'Sign in' button.")
+                    sign_in_elements[0].click()
+                    time.sleep(1)
+
+                    log_and_print("✅ Entering username and password.")
+                    driver.find_element(By.NAME, "username").send_keys(username)
+                    driver.find_element(By.NAME, "password").send_keys(password)
+                    driver.find_element(By.NAME, "password").send_keys(Keys.RETURN)
+                    time.sleep(20)
+                    signed_in = True
+                    break
+
+                log_and_print(
+                    f"⚠️ Sign-in menu not found (attempt {attempt}/{sign_in_attempts}). Reloading homepage..."
+                )
+
+            if not signed_in:
+                log_and_print(
+                    f"❌ Sign-in menu still not found after {sign_in_attempts} reloads. Ending script."
+                )
+                sys.exit(1)
         except NoSuchWindowException as e:
             log_and_print("❌ Browser window closed while checking sign-in; aborting updates.")
             raise e

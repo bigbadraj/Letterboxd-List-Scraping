@@ -131,8 +131,11 @@ BLACKLIST_PATH = os.path.join(LIST_DIR, 'blacklist.xlsx')
 WHITELIST_PATH = os.path.join(LIST_DIR, 'whitelist.xlsx')
 WHITELIST_SAVE_BATCH_SIZE = 25
 ZERO_REVIEWS_SAVE_BATCH_SIZE = 25
+# Official Whitelist.xlsx = mark whether a movie is new/not already in official lists.
+# Official Only Whitelist.xlsx = allow a movie into official lists only, excluding regular lists.
 OFFICIAL_WHITELIST_PATH = os.path.join(LIST_DIR, 'Official Whitelist.xlsx')
-OFFICIAL_BLACKLIST_PATH = os.path.join(LIST_DIR, 'Official Only Blacklist.xlsx')
+OFFICIAL_ONLY_WHITELIST_PATH = os.path.join(LIST_DIR, 'Official Only Whitelist.xlsx')
+OFFICIAL_ONLY_BLACKLIST_PATH = os.path.join(LIST_DIR, 'Official Only Blacklist.xlsx')
 ZERO_REVIEWS_PATH = os.path.join(LIST_DIR, 'Zero_Reviews.xlsx')  # Add new path
 CHROME_RESTART_EVERY_PAGES = 12
 PAGE_LOAD_TIMEOUT = 60
@@ -464,8 +467,8 @@ class MovieProcessor:
                     urls.add(normalized)
             return urls
 
-        self.official_only_whitelist_urls = _load_urls(OFFICIAL_WHITELIST_PATH)
-        self.official_only_blacklist_urls = _load_urls(OFFICIAL_BLACKLIST_PATH)
+        self.official_only_whitelist_urls = _load_urls(OFFICIAL_ONLY_WHITELIST_PATH)
+        self.official_only_blacklist_urls = _load_urls(OFFICIAL_ONLY_BLACKLIST_PATH)
 
     def get_whitelist_override_mode(self, film_url: Optional[str]) -> Optional[str]:
         """Return 'official' for official-only whitelist entries, 'normal' for official blacklist entries, or None."""
