@@ -982,6 +982,7 @@ def setup_webdriver():
         return None
 
     options = uc.ChromeOptions()
+    options.page_load_strategy = 'eager'
     options.add_argument("--window-size=1280,900")
     options.add_argument("--disable-blink-features=AutomationControlled")
     options.add_argument("--disable-dev-shm-usage")
@@ -1251,9 +1252,14 @@ class LetterboxdScraper:
 
     def _collect_listing_entries_from_page(self, poster_count: int) -> List[dict]:
         """
-        Parse the current listing DOM. Tries live Selenium elements first, then
-        falls back to static HTML parsing (avoids stale-element failure loops).
+        Parse listing HTML first so extraction does not depend on live Selenium
+        element handles that can become invalid during a browser restart.
         """
+        html_entries = parse_listing_films_from_html(self.driver.page_source, self.processor)
+        if poster_count > 0:
+            if len(html_entries) >= poster_count:
+                return html_entries[:poster_count]
+
         film_containers = self.driver.find_elements(By.CSS_SELECTOR, 'li.posteritem')
         if len(film_containers) != poster_count:
             poster_count = len(film_containers)
@@ -1263,16 +1269,7 @@ class LetterboxdScraper:
         except RuntimeError:
             raise
 
-        html_entries = parse_listing_films_from_html(self.driver.page_source, self.processor)
-
         if poster_count > 0:
-            if len(html_entries) >= poster_count:
-                if len(html_entries) > len(selenium_entries):
-                    print_to_csv(
-                        f"📄 HTML fallback parsed {len(html_entries)} entries "
-                        f"(Selenium got {len(selenium_entries)}, expected {poster_count})"
-                    )
-                return html_entries[:poster_count]
             if len(selenium_entries) >= poster_count:
                 return selenium_entries[:poster_count]
 

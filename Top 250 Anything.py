@@ -8,10 +8,11 @@ import pandas as pd
 import re
 import os
 import platform
+from urllib.parse import urljoin
 from tqdm import tqdm
 import csv
 
-# Silence undetected_chromedriver's noisy __del__ that logs WinError 6 on shutdown
+# Explicit driver.quit() handles shutdown; suppress UC's duplicate destructor cleanup.
 try:
     uc.Chrome.__del__ = lambda self: None
 except Exception:
@@ -160,37 +161,29 @@ class MovieCache:
     
 def setup_webdriver():
     """
-    Create Chrome driver using undetected-chromedriver, mirroring Genre 250s Chrome setup.
+    Create an undetected Chrome driver to avoid Letterboxd CAPTCHA challenges.
     """
-    def _detect_chrome_major_version():
+    def detect_chrome_major_version():
         try:
-            import winreg  # type: ignore
+            import winreg
             for hive in (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE):
                 for subkey in (
                     r"Software\Google\Chrome\BLBeacon",
                     r"Software\WOW6432Node\Google\Chrome\BLBeacon",
                 ):
                     try:
-                        k = winreg.OpenKey(hive, subkey)
-                        v, _ = winreg.QueryValueEx(k, "version")
-                        if v:
-                            return int(str(v).split(".", 1)[0])
+                        key = winreg.OpenKey(hive, subkey)
+                        version, _ = winreg.QueryValueEx(key, "version")
+                        if version:
+                            return int(str(version).split(".", 1)[0])
                     except Exception:
                         continue
-        except Exception:
-            pass
-        try:
-            import subprocess
-            out = subprocess.check_output(["chrome", "--version"], stderr=subprocess.STDOUT, text=True)
-            for token in out.split():
-                if token and token[0].isdigit() and "." in token:
-                    return int(token.split(".", 1)[0])
         except Exception:
             pass
         return None
 
     options = uc.ChromeOptions()
-    # Prefer normal window (undetected_chromedriver is already less detectable; headless can still be flagged)
+    options.page_load_strategy = 'eager'
     options.add_argument("--start-maximized")
     options.add_argument("--disable-blink-features=AutomationControlled")
     # Optional: use existing Chrome profile for Letterboxd login
@@ -205,15 +198,27 @@ def setup_webdriver():
         "safebrowsing.enabled": True,
     }
     options.add_experimental_option("prefs", prefs)
-    chrome_major = _detect_chrome_major_version()
+    chrome_major = detect_chrome_major_version()
     if chrome_major:
         driver = uc.Chrome(options=options, use_subprocess=True, version_main=chrome_major)
     else:
         driver = uc.Chrome(options=options, use_subprocess=True)
+    driver.set_page_load_timeout(30)
     return driver
 
 
 driver = setup_webdriver()
+
+
+def restart_webdriver():
+    """Replace a Chrome session that has stopped responding."""
+    global driver
+    try:
+        driver.quit()
+    except Exception:
+        pass
+    driver = setup_webdriver()
+    return driver
 
 # Initialize movie cache
 movie_cache = MovieCache()
@@ -275,6 +280,14 @@ def normalize_listing_film_url(film_url):
     return u
 
 
+def is_driver_failure(error_message):
+    lowered = error_message.lower()
+    return any(
+        marker in lowered
+        for marker in ('invalid session id', 'connection refused', 'connection aborted', 'connection reset')
+    )
+
+
 def scrape_film_page_details(driver, film_url: str, max_retries: int = 20):
     """Fetch title/year/tmdbID/ratingCount from a film page with retries."""
     for retry in range(max_retries):
@@ -303,7 +316,10 @@ def scrape_film_page_details(driver, film_url: str, max_retries: int = 20):
 
             return film_title, release_year, tmdb_id, rating_count
         except Exception as e:
-            print_to_csv(f"Error processing {film_url} (attempt {retry + 1}/{max_retries}): {str(e)}")
+            error_message = f"{type(e).__name__}: {e}"
+            print_to_csv(f"Error processing {film_url} (attempt {retry + 1}/{max_retries}): {error_message}")
+            if is_driver_failure(error_message):
+                driver = restart_webdriver()
             if retry < max_retries - 1:
                 print_to_csv(f"Retrying... (Attempt {retry + 1}/{max_retries})")
                 time.sleep(2)
@@ -322,59 +338,50 @@ def load_listing_page_and_extract_ordered_urls(listing_page_num):
     for retry in range(page_retries):
         try:
             driver.get(url)
-            WebDriverWait(driver, 10).until(
-                EC.presence_of_element_located((By.CSS_SELECTOR, 'li.posteritem'))
-            )
-            time.sleep(random.uniform(1.0, 1.5))
+            page_source = ''
+            deadline = time.time() + 20
+            while time.time() < deadline:
+                page_source = driver.page_source
+                if 'posteritem' in page_source:
+                    break
+                time.sleep(1)
+            if 'posteritem' not in page_source:
+                raise RuntimeError('Listing page did not contain posteritem markup')
             break
         except Exception as e:
+            error_message = f"{type(e).__name__}: {e}"
             if retry == page_retries - 1:
-                print_to_csv(f"❌ Failed to load page after {page_retries} attempts: {str(e)}")
-                raise Exception(f"Failed to load page after {page_retries} attempts: {str(e)}")
-            print_to_csv(f"Retry {retry + 1}/{page_retries} loading page {listing_page_num}: {str(e)}")
+                print_to_csv(f"❌ Failed to load page after {page_retries} attempts: {error_message}")
+                raise Exception(f"Failed to load page after {page_retries} attempts: {error_message}") from e
+            print_to_csv(f"Retry {retry + 1}/{page_retries} loading page {listing_page_num}: {error_message}")
+            if is_driver_failure(error_message):
+                restart_webdriver()
             time.sleep(2)
 
-    film_containers = []
-    container_retries = 25
-    for retry in range(container_retries):
-        try:
-            film_containers = WebDriverWait(driver, 10).until(
-                EC.presence_of_all_elements_located((By.CSS_SELECTOR, 'li.posteritem'))
-            )
-            if len(film_containers) > 0:
-                break
-            print_to_csv(f"Found no containers, retrying... (Attempt {retry + 1}/{container_retries})")
-            time.sleep(5)
-            driver.refresh()
-            time.sleep(2)
-        except Exception as e:
-            if retry == container_retries - 1:
-                print_to_csv(f"❌ Failed to find film containers after {container_retries} attempts: {str(e)}")
-                raise Exception(f"Failed to find film containers after {container_retries} attempts: {str(e)}")
-            print_to_csv(f"Retry {retry + 1}/{container_retries} finding film containers: {str(e)}")
-            time.sleep(5)
-            driver.refresh()
-            time.sleep(2)
-
+    page_source = driver.page_source
     page_urls = []
-    for container in film_containers:
-        try:
-            film_link = container.find_element(By.CSS_SELECTOR, 'a[href*="/film/"]')
-            page_urls.append(film_link.get_attribute('href'))
-        except Exception as e:
-            print_to_csv(f"Error extracting film URL from container: {str(e)}")
+    seen_urls = set()
+    for href in re.findall(r'<a\b[^>]*href=["\']([^"\']*?/film/[^"\']*)["\']', page_source, re.IGNORECASE):
+        film_url = urljoin(url, href)
+        if film_url not in seen_urls:
+            seen_urls.add(film_url)
+            page_urls.append(film_url)
+    print_to_csv(f"Collected {len(page_urls)} film URLs from page {listing_page_num}")
     return page_urls
 
 
 def extend_film_urls_with_page(film_urls, page_urls, max_movies_limit):
-    """Append URLs from one listing page, skipping a trailing/leading duplicate of film_urls[-1]. Returns how many were appended."""
+    """Append unique URLs from one listing page, up to the requested limit."""
     added = 0
+    existing_urls = {normalize_listing_film_url(url) for url in film_urls}
     for u in page_urls:
         if len(film_urls) >= max_movies_limit:
             break
-        if film_urls and normalize_listing_film_url(u) == normalize_listing_film_url(film_urls[-1]):
+        normalized_url = normalize_listing_film_url(u)
+        if not normalized_url or normalized_url in existing_urls:
             continue
         film_urls.append(u)
+        existing_urls.add(normalized_url)
         added += 1
     return added
 
@@ -420,7 +427,10 @@ while len(film_urls) < max_movies:
                 )
 
     urls_added_last_page = extend_film_urls_with_page(film_urls, page_urls, max_movies)
+    print_to_csv(f"Film URL total after page {current_page}: {len(film_urls)}/{max_movies}")
     listing_last_url_prev_page = page_urls[-1]
+    if len(film_urls) >= max_movies:
+        break
     current_page += 1
     time.sleep(random.uniform(1.0, 1.5))
 

@@ -1,4 +1,5 @@
 import time
+import sys
 import random
 import undetected_chromedriver as uc
 from selenium.webdriver.common.by import By
@@ -18,6 +19,8 @@ import unicodedata
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 import json
+from bs4 import BeautifulSoup
+from urllib.parse import urljoin
 from selenium.common.exceptions import NoSuchElementException
 from credentials_loader import load_credentials
 
@@ -60,7 +63,11 @@ CHROME_PROFILE_DIR = None    # e.g. 'Default' or 'Profile 1'
 # Define a custom print function
 def print_to_csv(message: str):
     """Prints a message to the terminal and appends it to All_Outputs.csv."""
-    print(message)  # Print to terminal
+    try:
+        print(message)
+    except UnicodeEncodeError:
+        encoding = getattr(sys.stdout, 'encoding', None) or 'ascii'
+        print(message.encode(encoding, errors='replace').decode(encoding))
     with open(os.path.join(output_dir, 'All_Outputs.csv'), mode='a', newline='', encoding='utf-8') as file:
         writer = csv.writer(file)
         writer.writerow([message])  # Write the message as a new row
@@ -101,8 +108,8 @@ EXPECTED_LISTING_POSTERS_PER_PAGE = 72
 CHUNK_SIZE = 1900
 
 # Human-like delays to reduce bot detection (set to (0, 0) to disable for speed)
-HUMAN_DELAY_BETWEEN_FILMS = (0,0)  # seconds between visiting each film page
-HUMAN_DELAY_BETWEEN_PAGES = (0,0)  # seconds between listing pages
+HUMAN_DELAY_BETWEEN_FILMS = (0.2,0.5)  # seconds between visiting each film page
+HUMAN_DELAY_BETWEEN_PAGES = (0.75,1.5)  # seconds between listing pages
 
 # Run both popular and rating scraping (config)
 scrape_types = ["popular", "rating"]
@@ -137,9 +144,11 @@ OFFICIAL_WHITELIST_PATH = os.path.join(LIST_DIR, 'Official Whitelist.xlsx')
 OFFICIAL_ONLY_WHITELIST_PATH = os.path.join(LIST_DIR, 'Official Only Whitelist.xlsx')
 OFFICIAL_ONLY_BLACKLIST_PATH = os.path.join(LIST_DIR, 'Official Only Blacklist.xlsx')
 ZERO_REVIEWS_PATH = os.path.join(LIST_DIR, 'Zero_Reviews.xlsx')  # Add new path
-CHROME_RESTART_EVERY_PAGES = 12
+CHROME_RESTART_EVERY_PAGES = 8
 PAGE_LOAD_TIMEOUT = 60
 FILM_FETCH_TIMEOUT = 20
+LISTING_FETCH_TIMEOUT = 20
+LISTING_POSTER_WAIT_TIMEOUT = 45
 BOUNDARY_HEAL_MAX_RETRIES = 5
 ROUTINE_REJECTION_REASONS = frozenset({
     'Zero reviews',
@@ -383,6 +392,61 @@ def extract_tmdb_id_from_html(page_source: str) -> Optional[str]:
     except Exception:
         pass
     return None
+
+
+def parse_listing_films_from_html(page_source: str, processor) -> List[dict]:
+    """Parse listing rows locally so extraction does not depend on live WebElements."""
+    soup = BeautifulSoup(page_source, 'html.parser')
+    film_list = soup.find('ul', class_='poster-list') or soup.find('ul')
+    if not film_list:
+        return []
+
+    film_data_list = []
+    for film in film_list.find_all('li', class_='posteritem'):
+        react_component = film.find('div', class_='react-component')
+        film_url = None
+        if react_component:
+            film_url = react_component.get('data-target-link') or react_component.get('data-item-link')
+        if not film_url:
+            anchor = film.find('a', href=lambda href: href and '/film/' in href)
+            if anchor:
+                film_url = anchor.get('href')
+        if not film_url:
+            continue
+        film_url = urljoin('https://letterboxd.com', film_url)
+
+        film_title = (
+            film.get('data-item-full-display-name')
+            or film.get('data-item-name')
+            or (react_component and (
+                react_component.get('data-item-full-display-name')
+                or react_component.get('data-item-name')
+            ))
+        )
+        anchor = film.find('a', href=lambda href: href and '/film/' in href)
+        if not film_title and anchor:
+            film_title = anchor.get('title')
+        if not film_title:
+            image = film.find('img')
+            if image and image.get('alt') and 'poster' not in image['alt'].lower():
+                film_title = image['alt'].replace(' poster', '').strip()
+        if not film_title:
+            film_title = film_url.split('/film/', 1)[-1].rstrip('/').replace('-', ' ').replace('_', ' ').title()
+
+        film_title = film_title.strip()
+        release_year = None
+        year_match = re.search(r'\((\d{4})\)', film_title)
+        if year_match:
+            release_year = year_match.group(1)
+            film_title = film_title[:year_match.start()].strip()
+
+        film_data_list.append({
+            'title': film_title,
+            'url': film_url,
+            'is_blacklisted': processor.is_blacklisted(None, None, film_url, None),
+            'release_year': release_year,
+        })
+    return film_data_list
 
 
 class MovieProcessor:
@@ -1142,14 +1206,12 @@ def setup_webdriver():
         return None
 
     options = uc.ChromeOptions()
+    options.page_load_strategy = 'eager'
     options.add_argument("--window-size=1280,900")
     options.add_argument("--disable-blink-features=AutomationControlled")
     options.add_argument("--disable-dev-shm-usage")
     options.add_argument("--disable-gpu")
-    options.add_argument("--disk-cache-size=1")
-    options.add_argument("--media-cache-size=1")
     options.add_argument("--disable-extensions")
-    options.add_argument("--disable-background-networking")
     # Optional: use existing Chrome profile for Letterboxd login
     if CHROME_USER_DATA_DIR and os.path.isdir(CHROME_USER_DATA_DIR):
         options.add_argument(f"--user-data-dir={CHROME_USER_DATA_DIR}")
@@ -1603,7 +1665,13 @@ class LetterboxdScraper:
             return self.driver.page_source
         except Exception as e:
             err = str(e).lower()
-            if "no such window" in err or "target window already closed" in err:
+            if any(marker in err for marker in (
+                "no such window",
+                "target window already closed",
+                "connection refused",
+                "connection reset",
+                "max retries exceeded",
+            )):
                 self._restart_driver("browser window closed during film fetch")
                 try:
                     self.driver.get(film_url)
@@ -1646,47 +1714,41 @@ class LetterboxdScraper:
         self.recovery_attempts += 1
         
         # Calculate wait time with exponential backoff (longer waits for more attempts)
-        wait_time = min(30, 5 + (self.recovery_attempts * 10))
+        wait_time = min(10, 2 + (self.recovery_attempts * 2))
         print_to_csv(f"🔄 Attempting browser recovery (attempt {self.recovery_attempts}/{self.max_recovery_attempts})...")
         print_to_csv(f"⏳ Waiting {wait_time} seconds before attempting recovery...")
         time.sleep(wait_time)
         
-        try:
-            # Close the crashed driver
+        recovery_page = self.page_number
+        recovery_url = f'{self.base_url}page/{recovery_page}/'
+        for startup_retry in range(3):
             try:
-                self.driver.quit()
-            except:
-                pass
-            
-            # Create a new driver
-            print_to_csv("Creating new browser instance...")
-            self.driver = setup_webdriver()
-            self._pages_since_driver_start = 0
-            
-            # Restore state - resume from the current page (not going back)
-            # The duplicate prevention logic will handle skipping already processed movies
-            recovery_page = self.page_number
-            self.page_number = recovery_page
-            
-            recovery_url = f'{self.base_url}page/{recovery_page}/'
-            print_to_csv(f"Navigating to recovery page: {recovery_url}")
-            print_to_csv(f"📝 Note: Duplicate prevention will skip any movies already processed in this session.")
-            
-            # Navigate to the recovery page
-            self.driver.get(recovery_url)
-            
-            # Wait for page to load
-            WebDriverWait(self.driver, 15).until(
-                EC.presence_of_element_located((By.CSS_SELECTOR, 'li.posteritem'))
-            )
-            
-            self.current_url = recovery_url
-            print_to_csv(f"✅ Browser recovery successful! Resumed from page {recovery_page}")
-            return True
-            
-        except Exception as e:
-            print_to_csv(f"❌ Browser recovery failed: {str(e)}")
-            return False
+                try:
+                    self.driver.quit()
+                except Exception:
+                    pass
+
+                print_to_csv(
+                    f"Creating new browser instance (startup attempt {startup_retry + 1}/3)..."
+                )
+                self.driver = setup_webdriver()
+                self._pages_since_driver_start = 0
+                self.driver.get(recovery_url)
+                WebDriverWait(self.driver, LISTING_POSTER_WAIT_TIMEOUT).until(
+                    EC.presence_of_element_located((By.CSS_SELECTOR, 'li.posteritem'))
+                )
+
+                self.current_url = recovery_url
+                self.recovery_attempts = 0
+                print_to_csv(f"✅ Browser recovery successful! Resumed from page {recovery_page}")
+                return True
+            except Exception as e:
+                print_to_csv(
+                    f"❌ Browser recovery startup attempt {startup_retry + 1}/3 failed: {str(e)}"
+                )
+                time.sleep(2)
+
+        return False
 
     def update_state_tracking(self, page_number, url):
         """Update state tracking for recovery purposes."""
@@ -1828,7 +1890,7 @@ class LetterboxdScraper:
                             return None, True
                         continue
 
-                WebDriverWait(self.driver, 15).until(
+                WebDriverWait(self.driver, LISTING_POSTER_WAIT_TIMEOUT).until(
                     EC.presence_of_element_located((By.CSS_SELECTOR, 'li.posteritem'))
                 )
 
@@ -1869,6 +1931,33 @@ class LetterboxdScraper:
 
                 time.sleep(delay)
 
+        page_source = None
+        for source_attempt in range(2):
+            try:
+                page_source = self.driver.page_source
+                break
+            except Exception as e:
+                print_to_csv(
+                    f"⚠️ Browser disconnected while reading page {page_num} HTML "
+                    f"(attempt {source_attempt + 1}/2): {e}"
+                )
+                page_source = self._fetch_http(url, LISTING_FETCH_TIMEOUT)
+                if page_source:
+                    print_to_csv(f"✅ Parsed page {page_num} from HTTP fallback after browser disconnect.")
+                    break
+                if source_attempt == 1 and not self.recover_browser():
+                    return None, True
+
+        if page_source is None:
+            page_source = self._fetch_http(url, LISTING_FETCH_TIMEOUT)
+            if not page_source:
+                return None, True
+
+        html_entries = parse_listing_films_from_html(page_source, self.processor)
+        if html_entries:
+            print_to_csv(f"Collected {len(html_entries)} movies from page {page_num}")
+            return html_entries, False
+
         film_containers = []
         container_retries = 35
         for retry in range(container_retries):
@@ -1880,7 +1969,7 @@ class LetterboxdScraper:
                         return None, True
                     continue
 
-                film_containers = WebDriverWait(self.driver, 15).until(
+                film_containers = WebDriverWait(self.driver, LISTING_POSTER_WAIT_TIMEOUT).until(
                     EC.presence_of_all_elements_located((By.CSS_SELECTOR, 'li.posteritem'))
                 )
 
@@ -1897,7 +1986,7 @@ class LetterboxdScraper:
                 delay = calculate_retry_delay(retry, base_delay=3)
                 time.sleep(delay)
                 self.driver.get(url)
-                WebDriverWait(self.driver, 15).until(
+                WebDriverWait(self.driver, LISTING_POSTER_WAIT_TIMEOUT).until(
                     EC.presence_of_element_located((By.CSS_SELECTOR, 'li.posteritem'))
                 )
                 time.sleep(2)
@@ -2201,7 +2290,35 @@ class LetterboxdScraper:
                 except Exception:
                     force_refresh_for_official = False
 
+                refreshed_info = None
                 if info == {} or missing_fields or force_refresh_for_official:
+                    try:
+                        if force_refresh_for_official and info != {} and not missing_fields:
+                            print_to_csv(
+                                f"ℹ️ Refreshing whitelist data for official runtime eligibility: {film_title} "
+                                f"(runtime={info.get('Runtime')}, saved_ratings={info.get('RatingCount', 0)}/{MIN_RATING_COUNT_OFFICIAL})"
+                            )
+                        if not self.is_browser_responsive():
+                            print_to_csv("🚨 Browser crash detected while loading movie page! Attempting recovery...")
+                            if not self.recover_browser():
+                                print_to_csv("❌ Browser recovery failed. Skipping this movie.")
+                                return False
+
+                        self.driver.get(film_url)
+                        WebDriverWait(self.driver, 10).until(
+                            EC.presence_of_element_located((By.CSS_SELECTOR, 'meta[property="og:title"]'))
+                        )
+                        refreshed_info = extract_all_movie_data(self.driver)
+                        if refreshed_info:
+                            refreshed_info['Title'] = film_title
+                            refreshed_info['Link'] = film_url
+                            info = refreshed_info
+                            release_year = info.get('Year') or release_year
+                            self.processor.update_whitelist(film_title, release_year, info, film_url)
+                    except Exception as e:
+                        print_to_csv(f"Error collecting fresh data for {film_title}: {str(e)}")
+
+                if (info == {} or missing_fields or force_refresh_for_official) and refreshed_info is None:
                     try:
                         if force_refresh_for_official and info != {} and not missing_fields:
                             print_to_csv(

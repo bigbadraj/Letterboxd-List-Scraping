@@ -102,6 +102,7 @@ def setup_webdriver():
         return None
 
     options = uc.ChromeOptions()
+    options.page_load_strategy = 'eager'
     # Prefer normal window (undetected_chromedriver is already less detectable; headless can still be flagged)
     options.add_argument("--start-maximized")
     options.add_argument("--disable-blink-features=AutomationControlled")
@@ -115,6 +116,7 @@ def setup_webdriver():
         driver = uc.Chrome(options=options, use_subprocess=True, version_main=chrome_major)
     else:
         driver = uc.Chrome(options=options, use_subprocess=True)
+    driver.set_page_load_timeout(30)
     return driver
 
 

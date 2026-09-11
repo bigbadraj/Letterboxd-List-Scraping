@@ -15,6 +15,7 @@ import unicodedata
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 import json
+from bs4 import BeautifulSoup
 
 # Silence undetected_chromedriver's noisy __del__ that logs WinError 6 on shutdown
 try:
@@ -463,9 +464,14 @@ def setup_webdriver():
         return None
 
     options = uc.ChromeOptions()
+    options.page_load_strategy = 'eager'
+    options.add_argument("--window-size=1280,900")
     # Prefer normal window (undetected_chromedriver is already less detectable; headless can still be flagged)
     options.add_argument("--start-maximized")
     options.add_argument("--disable-blink-features=AutomationControlled")
+    options.add_argument("--disable-dev-shm-usage")
+    options.add_argument("--disable-gpu")
+    options.add_argument("--disable-extensions")
     # Optional: use existing Chrome profile for Letterboxd login
     if CHROME_USER_DATA_DIR and os.path.isdir(CHROME_USER_DATA_DIR):
         options.add_argument(f"--user-data-dir={CHROME_USER_DATA_DIR}")
@@ -484,6 +490,7 @@ def setup_webdriver():
         driver = uc.Chrome(options=options, use_subprocess=True, version_main=chrome_major)
     else:
         driver = uc.Chrome(options=options, use_subprocess=True)
+    driver.set_page_load_timeout(30)
     return driver
 
 def is_retryable_error(error):
@@ -574,6 +581,15 @@ class LetterboxdScraper:
         self._listing_last_url_prev_page: Optional[str] = None
         print_to_csv("Initialized Letterboxd Scraper.")
 
+    def _restart_driver(self, reason: str = "") -> None:
+        try:
+            self.driver.quit()
+        except Exception:
+            pass
+        self.driver = setup_webdriver()
+        if reason:
+            print_to_csv(f"♻️ Chrome restarted ({reason})")
+
     @staticmethod
     def _normalize_listing_film_url(film_url: Optional[str]) -> str:
         # Backwards-compat wrapper for shared normalizer.
@@ -640,6 +656,49 @@ class LetterboxdScraper:
             except Exception as e:
                 print_to_csv(f"Error collecting film data: {str(e)}")
                 continue
+        return film_data_list
+
+    def _build_film_data_list_from_html(self, page_source: str) -> List[dict]:
+        """Extract listing rows from one HTML snapshot, without live Selenium elements."""
+        soup = BeautifulSoup(page_source, 'html.parser')
+        film_data_list: List[dict] = []
+        for container in soup.select('li.posteritem'):
+            react_component = container.select_one('div.react-component')
+            anchor = container.select_one('a[href*="/film/"]')
+            film_url = (
+                react_component.get('data-item-link')
+                if react_component else None
+            ) or (anchor.get('href') if anchor else None)
+            if not film_url:
+                continue
+
+            film_title = (
+                react_component.get('data-item-full-display-name')
+                if react_component else None
+            ) or (
+                container.get('data-item-full-display-name')
+                or container.get('data-item-name')
+                or (anchor.get('title') if anchor else None)
+            )
+            if not film_title:
+                image = container.select_one('img')
+                film_title = image.get('alt', '') if image else ''
+                film_title = film_title.replace(' poster', '').strip()
+            if not film_title or not film_url:
+                continue
+
+            if film_url.startswith('/'):
+                film_url = f"https://letterboxd.com{film_url}"
+
+            release_year = None
+            if '(' in film_title and ')' in film_title:
+                release_year = film_title.rsplit('(', 1)[-1].split(')', 1)[0].strip()
+            film_data_list.append({
+                'title': film_title.strip(),
+                'url': film_url,
+                'is_blacklisted': self.processor.is_blacklisted(None, None, film_url, None),
+                'release_year': release_year,
+            })
         return film_data_list
 
     def _process_one_comedy_listing_film(self, film_data: dict) -> bool:
@@ -738,6 +797,18 @@ class LetterboxdScraper:
                 self.process_movie_data(movie_data, display_title, film_url)
                 break
             except Exception as e:
+                error_text = str(e).lower()
+                if any(indicator in error_text for indicator in (
+                    'connection refused',
+                    'max retries exceeded',
+                    'no such window',
+                    'target window already closed',
+                )):
+                    print_to_csv("⚠️ Chrome session disconnected during movie processing; restarting it.")
+                    try:
+                        self._restart_driver("movie session disconnected")
+                    except Exception as restart_error:
+                        print_to_csv(f"⚠️ Could not restart Chrome: {restart_error}")
                 if retry == movie_retries - 1:
                     print_to_csv(f"❌ Failed to process movie after {movie_retries} attempts: {str(e)}")
                     self.processor.rejected_data.append([film_title, release_year, None, f'Error: {str(e)}'])
@@ -967,7 +1038,27 @@ class LetterboxdScraper:
 
             print_to_csv(f"\n{f' Page {self.page_number} ':=^100}")
 
-            film_data_list = self._build_film_data_list_from_containers(film_containers)
+            try:
+                film_data_list = self._build_film_data_list_from_html(self.driver.page_source)
+            except Exception as e:
+                print_to_csv(f"⚠️ Listing HTML unavailable: {e}. Restarting Chrome and reloading page.")
+                self._restart_driver("listing session disconnected")
+                self.driver.get(url)
+                WebDriverWait(self.driver, 10).until(
+                    EC.presence_of_element_located((By.CSS_SELECTOR, 'li.posteritem'))
+                )
+                film_data_list = self._build_film_data_list_from_html(self.driver.page_source)
+
+            if len(film_data_list) < n_posters:
+                print_to_csv(
+                    f"⚠️ HTML parser found {len(film_data_list)}/{n_posters} films; "
+                    "using Selenium fallback for missing rows."
+                )
+                selenium_rows = self._build_film_data_list_from_containers(
+                    self.driver.find_elements(By.CSS_SELECTOR, 'li.posteritem')
+                )
+                if len(selenium_rows) > len(film_data_list):
+                    film_data_list = selenium_rows
             print_to_csv(f"Collected {len(film_data_list)} movies from page {self.page_number}")
 
             if not film_data_list:

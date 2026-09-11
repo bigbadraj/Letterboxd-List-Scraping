@@ -59,7 +59,12 @@ CHROME_PROFILE_DIR = None    # e.g. 'Default' or 'Profile 1'
 # Define a custom print function
 def log_and_print(message: str):
     """Prints a message to the terminal and appends it to All_Outputs.csv."""
-    print(message)  # Print to terminal
+    try:
+        print(message)
+    except UnicodeEncodeError:
+        # Keep logging usable in legacy Windows consoles that do not support Unicode.
+        encoding = getattr(sys.stdout, 'encoding', None) or 'ascii'
+        print(message.encode(encoding, errors='replace').decode(encoding))
     
     # Ensure output directory exists
     os.makedirs(output_dir, exist_ok=True)
@@ -105,6 +110,42 @@ def safe_click_import_button(driver, log_and_print_func):
                 raise e
     
     time.sleep(2)
+
+
+def wait_for_import_results(driver, timeout=90):
+    """Wait for Letterboxd to finish importing instead of sleeping a fixed duration."""
+    WebDriverWait(driver, timeout, poll_frequency=0.5).until(
+        EC.element_to_be_clickable((By.CSS_SELECTOR, ".add-import-films-to-list"))
+    )
+
+
+def wait_for_list_editor(driver, timeout=30):
+    """Wait until the list editor is ready for another action."""
+    WebDriverWait(driver, timeout, poll_frequency=0.5).until(
+        EC.presence_of_element_located((By.CSS_SELECTOR, ".list-import-link"))
+    )
+
+
+def wait_for_visible_input(driver, name, timeout=15):
+    """Return the visible, enabled input when Letterboxd renders duplicate form fields."""
+    def find_input(current_driver):
+        for element in current_driver.find_elements(By.NAME, name):
+            if element.is_displayed() and element.is_enabled():
+                return element
+        return False
+
+    return WebDriverWait(driver, timeout, poll_frequency=0.5).until(find_input)
+
+
+def wait_for_visible_sign_in_link(driver, timeout=15):
+    """Return the visible sign-in link after the homepage finishes rendering."""
+    def find_link(current_driver):
+        for element in current_driver.find_elements(By.CSS_SELECTOR, ".sign-in-menu a"):
+            if element.is_displayed() and element.is_enabled():
+                return element
+        return False
+
+    return WebDriverWait(driver, timeout, poll_frequency=0.5).until(find_link)
 
 def update_letterboxd_lists():
     # Load credentials
@@ -247,52 +288,43 @@ def update_letterboxd_lists():
         return None
 
     # Initialize the Chrome driver (undetected-chromedriver to reduce Cloudflare/captcha blocks)
+    driver = None
     options = uc.ChromeOptions()
+    options.page_load_strategy = 'eager'
+    options.add_argument("--window-size=1280,900")
     options.add_argument("--start-maximized")
     options.add_argument("--disable-blink-features=AutomationControlled")
+    options.add_argument("--disable-dev-shm-usage")
+    options.add_argument("--disable-gpu")
+    options.add_argument("--disable-extensions")
     if CHROME_USER_DATA_DIR and os.path.isdir(CHROME_USER_DATA_DIR):
         options.add_argument(f"--user-data-dir={CHROME_USER_DATA_DIR}")
         if CHROME_PROFILE_DIR:
             options.add_argument(f"--profile-directory={CHROME_PROFILE_DIR}")
     chrome_major = _detect_chrome_major_version()
+    log_and_print(f"✅ Starting Chrome driver (detected major: {chrome_major or 'automatic'}).")
     if chrome_major:
         driver = uc.Chrome(options=options, use_subprocess=True, version_main=chrome_major)
     else:
         driver = uc.Chrome(options=options, use_subprocess=True)
-    time.sleep(5)  # let Chrome finish starting before navigation
+    driver.set_page_load_timeout(30)
+    log_and_print("✅ Chrome driver started.")
 
     try:
         log_and_print("✅ Navigating to Letterboxd homepage.")
-        sign_in_attempts = 5
-        signed_in = False
         try:
-            for attempt in range(1, sign_in_attempts + 1):
-                driver.get("https://letterboxd.com/")
-                time.sleep(5)
-
-                sign_in_elements = driver.find_elements(By.CSS_SELECTOR, ".sign-in-menu a")
-                if sign_in_elements:
-                    log_and_print("✅ Clicking on the 'Sign in' button.")
-                    sign_in_elements[0].click()
-                    time.sleep(1)
-
-                    log_and_print("✅ Entering username and password.")
-                    driver.find_element(By.NAME, "username").send_keys(username)
-                    driver.find_element(By.NAME, "password").send_keys(password)
-                    driver.find_element(By.NAME, "password").send_keys(Keys.RETURN)
-                    time.sleep(20)
-                    signed_in = True
-                    break
-
-                log_and_print(
-                    f"⚠️ Sign-in menu not found (attempt {attempt}/{sign_in_attempts}). Reloading homepage..."
-                )
-
-            if not signed_in:
-                log_and_print(
-                    f"❌ Sign-in menu still not found after {sign_in_attempts} reloads. Ending script."
-                )
-                sys.exit(1)
+            driver.get("https://letterboxd.com/sign-in/")
+            log_and_print("✅ Entering username and password.")
+            username_input = wait_for_visible_input(driver, "username")
+            password_input = wait_for_visible_input(driver, "password")
+            username_input.clear()
+            username_input.send_keys(username)
+            password_input.clear()
+            password_input.send_keys(password)
+            password_input.send_keys(Keys.RETURN)
+            WebDriverWait(driver, 30).until(
+                lambda current_driver: "/sign-in" not in current_driver.current_url
+            )
         except NoSuchWindowException as e:
             log_and_print("❌ Browser window closed while checking sign-in; aborting updates.")
             raise e
@@ -382,7 +414,7 @@ def update_letterboxd_lists():
                     log_and_print(f"❌ Failed to find any matching text files for {list_name} after {max_attempts} attempts.")
                     has_error = True  
 
-                time.sleep(15)  
+                wait_for_import_results(driver)
 
                 # Step 4: Click the "Hide Successful Matches" button
                 try:
@@ -498,7 +530,7 @@ def update_letterboxd_lists():
                 pyautogui.typewrite(csv_file_name, interval=0.1)
                 time.sleep(1)  
                 pyautogui.press('enter')  # Select the filtered file
-                time.sleep(30)  
+                wait_for_import_results(driver)
 
                 # Step 4: Click the "Hide Successful Matches" button
                 try:
@@ -616,7 +648,7 @@ def update_letterboxd_lists():
                 time.sleep(1)  
                 pyautogui.press('enter')  # Select the filtered file
 
-                time.sleep(60)  
+                wait_for_import_results(driver)
 
                 # Attempt to find and copy the associated txt file
                 file_found = False
@@ -683,10 +715,9 @@ def update_letterboxd_lists():
                         log_and_print(f"❌ Failed to add text using send_keys: {str(e)}")
 
                 # Step 7: Save the changes for the first import
-                time.sleep(15)
                 log_and_print("✅ Saving the changes for the first import.");
                 driver.find_element(By.ID, "list-edit-save").click()
-                time.sleep(60)  
+                wait_for_list_editor(driver)
 
                 # Step 8: Check if the second CSV file exists before attempting to upload
                 log_and_print("✅ Checking second CSV file.")
@@ -730,7 +761,7 @@ def update_letterboxd_lists():
                 time.sleep(1)  
                 pyautogui.press('enter')  # Select the filtered file
 
-                time.sleep(60)  
+                wait_for_import_results(driver)
 
                 # Step 11: Click the "Hide Successful Matches" button again
                 try:
@@ -752,7 +783,7 @@ def update_letterboxd_lists():
                 time.sleep(1)
                 log_and_print("✅ Saving the changes for the second import.")
                 driver.find_element(By.ID, "list-edit-save").click()
-                time.sleep(60)  
+                wait_for_list_editor(driver)
 
                 # Step 13: Check if the third CSV file exists before attempting to upload
                 log_and_print("✅ Checking third CSV file.")
@@ -796,7 +827,7 @@ def update_letterboxd_lists():
                 time.sleep(1)  
                 pyautogui.press('enter')  # Select the filtered file
 
-                time.sleep(60)  
+                wait_for_import_results(driver)
 
                 # Step 16: Click the "Hide Successful Matches" button again
                 try:
@@ -818,7 +849,7 @@ def update_letterboxd_lists():
                 time.sleep(1)
                 log_and_print("✅ Saving the changes for the third import.")
                 driver.find_element(By.ID, "list-edit-save").click()
-                time.sleep(60)   
+                wait_for_list_editor(driver)
 
                 log_and_print(f"✅ Successfully updated special list: {list_name}")
                 # Append success result for special list
@@ -853,7 +884,8 @@ def update_letterboxd_lists():
         # Close the browser
         time.sleep(5)
         log_and_print("✅ Closing the browser.")
-        driver.quit()
+        if driver is not None:
+            driver.quit()
 
 # Example usage
 update_letterboxd_lists()
