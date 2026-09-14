@@ -28,6 +28,9 @@ LISTS_TO_COMPARE = (
     "https://letterboxd.com/bigbadraj/list/saw-movies-ranked/",
     "https://letterboxd.com/bigbadraj/list/nightmare-on-elm-street-movies-ranked/",
     "https://letterboxd.com/bigbadraj/list/hannibal-movies-ranked/",
+    "https://letterboxd.com/bigbadraj/list/marvel-movies-ranked/",
+    "https://letterboxd.com/bigbadraj/list/superhero-movies-ranked-1/",
+    "https://letterboxd.com/bigbadraj/list/dc-movies-ranked-1/"
 )
 FETCH_WORKERS = 8
 
@@ -206,7 +209,7 @@ def print_discrepancies(
         if current_positions[path] != corrected_positions.get(path)
     ]
 
-    print("\n❌ Films that need to move:")
+    print("\nFilms that need to move:")
     for path in moved_paths:
         title = metadata.get(path, (path, "", ""))[0]
         print(
@@ -238,7 +241,7 @@ def compare_list(
     output_path = os.path.join(get_output_dir(), output_filename(list_url))
     write_corrected_csv(corrected_paths, output_path, metadata)
     print(
-        f"❌ The {list_name} list has ordering discrepancies at {changed_positions} "
+        f"The {list_name} list has ordering discrepancies at {changed_positions} "
         f"position(s). Corrected CSV written to {output_path}."
     )
 

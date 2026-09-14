@@ -125,43 +125,57 @@ def find_save_button(driver):
     raise NoSuchElementException("Could not locate Letterboxd save button using current selectors.")
 
 
+def hard_reload_page(driver, log_and_print_func=None, reason="page failed to load"):
+    """Force a full browser reload to recover from blank or half-rendered Letterboxd pages."""
+    try:
+        current_url = driver.current_url or "(unknown url)"
+        if log_and_print_func:
+            log_and_print_func(f"⚠️ Hard reloading page after {reason}: {current_url}")
+        driver.execute_script("window.location.reload(true);")
+        time.sleep(3)
+        return True
+    except Exception as error:
+        if log_and_print_func:
+            log_and_print_func(f"⚠️ Hard reload attempt failed: {error}")
+        try:
+            driver.refresh()
+            time.sleep(3)
+            return True
+        except Exception:
+            return False
+
+
 def safe_click_import_button(driver, log_and_print_func):
     """
     Safely click the import button with proper waiting and retry logic.
     This prevents the 'saving' element from obscuring the button.
     """
-    log_and_print_func("✅ Clicking the Import button.")
-
-    # Wait a bit for any ongoing operations to complete
-    time.sleep(5)
-
-    # Retry mechanism for clicking import button
-    max_retries = 3
-    for attempt in range(max_retries):
+    for attempt in range(1, 3):
         try:
             saving_elements = driver.find_elements(By.CSS_SELECTOR, ".saving")
             if saving_elements:
                 log_and_print_func("✅ Saving indicator detected, waiting briefly...")
                 time.sleep(3)
 
-            import_button = find_import_button(driver)
-            WebDriverWait(driver, 5).until(lambda current_driver: import_button.is_displayed() and import_button.is_enabled())
-            driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", import_button)
-            try:
-                import_button.click()
-            except Exception:
-                driver.execute_script("arguments[0].click();", import_button)
-            log_and_print_func("✅ Successfully clicked import button.")
-            break
+            start_time = time.time()
+            while time.time() - start_time < 5:
+                try:
+                    import_button = find_import_button(driver)
+                    driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", import_button)
+                    import_button.click()
+                    log_and_print_func("✅ Successfully clicked import button.")
+                    time.sleep(2)
+                    return driver
+                except Exception:
+                    time.sleep(0.5)
 
-        except Exception as e:
-            log_and_print_func(f"⚠️ Attempt {attempt + 1} failed to click import button: {str(e)}")
-            if attempt < max_retries - 1:
-                time.sleep(3)
-            else:
-                raise e
+            log_and_print_func(
+                f"⚠️ Import button was not clickable within 5 seconds (attempt {attempt}/2)."
+            )
+        except Exception as error:
+            log_and_print_func(f"⚠️ Attempt {attempt} failed to click import button: {error}")
 
-    time.sleep(2)
+    raise RuntimeError("Import button was not clickable after two 5-second attempts.")
 
 
 def wait_for_import_results(driver, timeout=90):
@@ -267,7 +281,7 @@ def import_simple_list(driver, edit_url, csv_path, csv_file_name, log_and_print_
     """Replace a list from a CSV without changing its description."""
     driver.get(edit_url)
     time.sleep(2)
-    safe_click_import_button(driver, log_and_print_func)
+    driver = safe_click_import_button(driver, log_and_print_func)
 
     log_and_print_func(f"✅ Selecting CSV file: {csv_file_name}")
     time.sleep(1)
@@ -313,6 +327,7 @@ def import_simple_list(driver, edit_url, csv_path, csv_file_name, log_and_print_
     except Exception:
         driver.execute_script("arguments[0].click();", save_button)
     time.sleep(7)
+    return driver
 
 
 def is_blank_or_unusable_page(driver):
@@ -473,7 +488,10 @@ def login_to_letterboxd(driver, username, password, log_and_print_func):
                 WebDriverWait(driver, 30).until(lambda current_driver: "/sign-in" not in current_driver.current_url)
             except TimeoutException:
                 if is_blank_or_unusable_page(driver):
-                    raise RuntimeError("Blank page after sign-in attempt.")
+                    log_and_print_func("⚠️ Blank or unusable sign-in page detected; forcing a hard reload.")
+                    hard_reload_page(driver, log_and_print_func, "sign-in page failure")
+                    if is_blank_or_unusable_page(driver):
+                        raise RuntimeError("Blank page after sign-in attempt.")
                 log_and_print_func(
                     "⚠️ Sign In did not redirect. Complete any Letterboxd security "
                     "verification in Chrome; waiting up to 2 minutes."
@@ -626,6 +644,9 @@ def update_letterboxd_lists():
         "Personal_saw_movies_ranked": "https://letterboxd.com/bigbadraj/list/saw-movies-ranked/edit/",
         "Personal_nightmare_on_elm_street_movies_ranked": "https://letterboxd.com/bigbadraj/list/nightmare-on-elm-street-movies-ranked/edit/",
         "Personal_hannibal_movies_ranked": "https://letterboxd.com/bigbadraj/list/hannibal-movies-ranked/edit/",
+        "Personal_marvel_movies_ranked": "https://letterboxd.com/bigbadraj/list/marvel-movies-ranked/edit/",
+        "Personal_superhero_movies_ranked_1": "https://letterboxd.com/bigbadraj/list/superhero-movies-ranked-1/edit/",
+        "Personal_dc_movies_ranked_1": "https://letterboxd.com/bigbadraj/list/dc-movies-ranked-1/edit/",
     }
 
     # Dictionary of lists to update with specific descriptions
@@ -686,7 +707,7 @@ def update_letterboxd_lists():
 
                 if not os.path.exists(csv_file_path):
                     log_and_print(f"❌ CSV file not found: {csv_file_name}")
-                    log_and_print(f"❌ Skipping list update for {list_name} - required file does not exist")
+                    log_and_print(f"⏩ Skipping list update for {list_name} - required file does not exist")
                     results.append({
                         'list_name': list_name,
                         'status': f'Failed to update: CSV file {csv_file_name} not found'
@@ -695,7 +716,7 @@ def update_letterboxd_lists():
 
                 if not matching_files:
                     log_and_print(f"❌ Stats text file not found for {list_name}")
-                    log_and_print(f"❌ Skipping list update for {list_name} - required file does not exist")
+                    log_and_print(f"⏩ Skipping list update for {list_name} - required file does not exist")
                     results.append({
                         'list_name': list_name,
                         'status': f'Failed to update: stats text file for {list_name} not found'
@@ -710,7 +731,7 @@ def update_letterboxd_lists():
                 time.sleep(2)
 
                 # Click the Import button
-                safe_click_import_button(driver, log_and_print)
+                driver = safe_click_import_button(driver, log_and_print)
 
                 # Step 3: Select the correct CSV file
                 log_and_print(f"✅ Selecting CSV file: {csv_file_name}")
@@ -812,7 +833,7 @@ def update_letterboxd_lists():
             csv_file_name = f"{list_name}.csv"
             csv_file_path = os.path.join(output_dir, csv_file_name)
             if not os.path.exists(csv_file_path):
-                log_and_print(f"ℹ️ Skipping {list_name}: {csv_file_name} does not exist.")
+                log_and_print(f"⏩ Skipping {list_name}: {csv_file_name} does not exist.")
                 results.append({
                     'list_name': list_name,
                     'status': f'Skipped: CSV file {csv_file_name} not found'
@@ -854,7 +875,7 @@ def update_letterboxd_lists():
 
                 if not os.path.exists(csv_file_path):
                     log_and_print(f"❌ CSV file not found: {csv_file_name}")
-                    log_and_print(f"❌ Skipping list update for {list_name} - file does not exist")
+                    log_and_print(f"⏩ Skipping list update for {list_name} - file does not exist")
                     results.append({
                         'list_name': list_name,
                         'status': f'Failed to update: CSV file {csv_file_name} not found'
@@ -866,7 +887,7 @@ def update_letterboxd_lists():
                 time.sleep(2)
 
                 # Click the Import button
-                safe_click_import_button(driver, log_and_print)  
+                driver = safe_click_import_button(driver, log_and_print)
 
                 # Step 3: Select the correct CSV file
 
@@ -982,7 +1003,7 @@ def update_letterboxd_lists():
 
                 if missing_csv_files:
                     log_and_print(f"❌ CSV file(s) not found: {', '.join(missing_csv_files)}")
-                    log_and_print(f"❌ Skipping special list update for {list_name} - required file does not exist")
+                    log_and_print(f"⏩ Skipping special list update for {list_name} - required file does not exist")
                     results.append({
                         'list_name': list_name,
                         'status': f'Failed to update: CSV file(s) {", ".join(missing_csv_files)} not found'
@@ -991,7 +1012,7 @@ def update_letterboxd_lists():
 
                 if not matching_files:
                     log_and_print(f"❌ Stats text file not found for {list_name}")
-                    log_and_print(f"❌ Skipping special list update for {list_name} - required file does not exist")
+                    log_and_print(f"⏩ Skipping special list update for {list_name} - required file does not exist")
                     results.append({
                         'list_name': list_name,
                         'status': f'Failed to update: stats text file for {list_name} not found'
@@ -1007,7 +1028,7 @@ def update_letterboxd_lists():
                 time.sleep(2)
 
                 # Click the Import button
-                safe_click_import_button(driver, log_and_print)  
+                driver = safe_click_import_button(driver, log_and_print)
 
                 # Step 3: Import the first CSV file
                 log_and_print("✅ Importing the first CSV file.")
@@ -1089,7 +1110,7 @@ def update_letterboxd_lists():
 
                 if not os.path.exists(csv_file_path):
                     log_and_print(f"❌ CSV file not found: {csv_file_name}")
-                    log_and_print(f"❌ Skipping second CSV import for {list_name} - file does not exist")
+                    log_and_print(f"⏩ Skipping second CSV import for {list_name} - file does not exist")
                     results.append({
                         'list_name': list_name,
                         'status': f'Failed to update: CSV file {csv_file_name} not found'
@@ -1098,7 +1119,7 @@ def update_letterboxd_lists():
 
                 # Step 9: Click the Import button again
                 log_and_print("✅ Clicking the Import button for the second time.")
-                safe_click_import_button(driver, log_and_print)  
+                driver = safe_click_import_button(driver, log_and_print)
 
                 # Step 10: Import the second CSV file
                 log_and_print("✅ Importing the second CSV file.")
@@ -1160,7 +1181,7 @@ def update_letterboxd_lists():
 
                 if not os.path.exists(csv_file_path):
                     log_and_print(f"❌ CSV file not found: {csv_file_name}")
-                    log_and_print(f"❌ Skipping third CSV import for {list_name} - file does not exist")
+                    log_and_print(f"⏩ Skipping third CSV import for {list_name} - file does not exist")
                     results.append({
                         'list_name': list_name,
                         'status': f'Failed to update: CSV file {csv_file_name} not found'
@@ -1169,7 +1190,7 @@ def update_letterboxd_lists():
 
                 # Step 14: Click the Import button for the third time
                 log_and_print("✅ Clicking the Import button for the third time.")
-                safe_click_import_button(driver, log_and_print)  
+                driver = safe_click_import_button(driver, log_and_print)
 
                 # Step 15: Import the third CSV file
                 log_and_print("✅ Importing the third CSV file.")

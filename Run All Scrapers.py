@@ -15,6 +15,7 @@ SCRIPTS = [
     ("Top 250 Anything.py", "Letterboxd Min Filtering Scraper"),
     ("5000 Pop and Top.py", "Letterboxd 5000 Pop and Top Films Scraper"),
     ("Genre 250s.py", "Top 250 Genres Scraper"),
+    ("Personal Lists.py", "Personal Lists Scraper"),
     ("Update Letterboxd Lists.py", "Update Lists on Letterboxd"),
     ("Update JSONs.py", "Update Github JSON Files from Letterboxd Lists"),
     ("Official_Comedy_100.py", "Letterboxd Official Comedy List Scraper"),
