@@ -100,8 +100,12 @@ def find_save_button(driver):
     selectors = [
         "button[type='submit'] .label",
         "button.button-neue.-primary",
+        "button.button-primary",
+        "button.-primary",
+        "button[data-role='save']",
         "button[type='submit']",
         "#list-edit-save",
+        "input[type='submit']",
     ]
 
     for selector in selectors:
@@ -118,11 +122,38 @@ def find_save_button(driver):
             if element.is_displayed() and element.is_enabled():
                 return element
 
-    for element in driver.find_elements(By.XPATH, "//button[normalize-space(.)='Save' or @type='submit']"):
+    for element in driver.find_elements(
+        By.XPATH,
+        "//button[contains(translate(normalize-space(.), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'save') or @type='submit'] | //input[@type='submit']",
+    ):
         if element.is_displayed() and element.is_enabled():
             return element
 
-    raise NoSuchElementException("Could not locate Letterboxd save button using current selectors.")
+    visible_controls = driver.execute_script(
+        """
+        return Array.from(document.querySelectorAll('button, input, a'))
+            .filter(element => {
+                const style = window.getComputedStyle(element);
+                const rect = element.getBoundingClientRect();
+                return style.display !== 'none' && style.visibility !== 'hidden' &&
+                    rect.width > 0 && rect.height > 0;
+            })
+            .map(element => ({
+                tag: element.tagName,
+                type: element.getAttribute('type'),
+                id: element.id,
+                classes: element.className,
+                href: element.getAttribute('href'),
+                onclick: element.getAttribute('onclick'),
+                text: (element.innerText || element.value || element.getAttribute('aria-label') || '').trim()
+            }))
+            .slice(-30);
+        """
+    )
+    raise NoSuchElementException(
+        "Could not locate Letterboxd save button using current selectors. "
+        f"URL: {driver.current_url}; Visible controls: {visible_controls}"
+    )
 
 
 def hard_reload_page(driver, log_and_print_func=None, reason="page failed to load"):
@@ -178,11 +209,62 @@ def safe_click_import_button(driver, log_and_print_func):
     raise RuntimeError("Import button was not clickable after two 5-second attempts.")
 
 
-def wait_for_import_results(driver, timeout=90):
+def wait_for_import_results(driver, timeout=120):
     """Wait for Letterboxd to finish importing instead of sleeping a fixed duration."""
     WebDriverWait(driver, timeout, poll_frequency=0.5).until(
         EC.element_to_be_clickable((By.CSS_SELECTOR, ".add-import-films-to-list"))
     )
+
+
+def click_add_films_button(driver, log_and_print_func):
+    """Submit the current import and wait until the list editor is available again."""
+    add_films_button = driver.find_element(By.CSS_SELECTOR, ".add-import-films-to-list")
+    add_films_button.click()
+    log_and_print_func("✅ Clicking the 'Add films to list' button.")
+    time.sleep(30)
+
+
+def wait_for_post_import_editor(driver, timeout=25):
+    """Wait for Letterboxd to finish applying an import and restore the editor controls."""
+    def editor_is_ready(current_driver):
+        try:
+            find_save_button(current_driver)
+            return True
+        except Exception:
+            return False
+
+    WebDriverWait(driver, timeout, poll_frequency=0.5).until(editor_is_ready)
+
+
+def set_import_checkbox(driver, selector, checked, label, log_and_print_func):
+    """Set a custom import checkbox through its real input, not its decorative icon."""
+    try:
+        checkbox = WebDriverWait(driver, 15, poll_frequency=0.5).until(
+            EC.presence_of_element_located((By.CSS_SELECTOR, selector))
+        )
+        current_value = driver.execute_script("return arguments[0].checked;", checkbox)
+        if bool(current_value) != checked:
+            driver.execute_script("arguments[0].click();", checkbox)
+        log_and_print_func(f"✅ Set '{label}' to {'on' if checked else 'off'}.")
+        return True
+    except Exception as error:
+        log_and_print_func(f"⚠️ Could not set '{label}': {error}")
+        return False
+
+
+def update_import_description(driver, description, log_and_print_func):
+    """Update the description when the editor renders it; do not abort an import if it does not."""
+    try:
+        description_field = WebDriverWait(driver, 25, poll_frequency=0.5).until(
+            EC.visibility_of_element_located((By.CSS_SELECTOR, "textarea[name='notes']"))
+        )
+        description_field.clear()
+        description_field.send_keys(description)
+        log_and_print_func("✅ Successfully updated the list description.")
+        return True
+    except Exception as error:
+        log_and_print_func(f"⚠️ List description was not available after import; leaving it unchanged: {error}")
+        return False
 
 
 def wait_for_list_editor(driver, timeout=30):
@@ -320,6 +402,87 @@ def import_simple_list(driver, edit_url, csv_path, csv_file_name, log_and_print_
     log_and_print_func("✅ Clicking the 'Add films to list' button.")
     driver.find_element(By.CSS_SELECTOR, ".add-import-films-to-list").click()
     time.sleep(5)
+    save_button = find_save_button(driver)
+    driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", save_button)
+    try:
+        save_button.click()
+    except Exception:
+        driver.execute_script("arguments[0].click();", save_button)
+    time.sleep(7)
+    return driver
+
+
+def import_csv_into_list(
+    driver,
+    edit_url,
+    csv_path,
+    csv_file_name,
+    log_and_print_func,
+    replace_existing=False,
+    description=None,
+    open_editor=False,
+):
+    """Run the regular list-import workflow for one CSV chunk."""
+    if open_editor:
+        driver.get(edit_url)
+        time.sleep(2)
+    else:
+        wait_for_list_editor(driver)
+    safe_click_import_button(driver, log_and_print_func)
+
+    log_and_print_func(f"✅ Selecting CSV file: {csv_file_name}")
+    time.sleep(1)
+    pyautogui.hotkey('alt', 'd')
+    time.sleep(1)
+    pyautogui.typewrite(os.path.dirname(csv_path), interval=0.1)
+    pyautogui.press('enter')
+    time.sleep(1)
+    pyautogui.hotkey('alt', 'n')
+    time.sleep(0.5)
+    pyautogui.typewrite(csv_file_name, interval=0.1)
+    time.sleep(1)
+    pyautogui.press('enter')
+
+    time.sleep(2)
+    wait_for_import_results(driver)
+
+    try:
+        hide_successful_matches_handle = driver.find_element(
+            By.CSS_SELECTOR, ".import-toggle .handle"
+        )
+        try:
+            hide_successful_matches_handle.click()
+        except Exception:
+            driver.execute_script("arguments[0].click();", hide_successful_matches_handle)
+        log_and_print_func("✅ Clicked the 'Hide Successful Matches' handle.")
+    except Exception as error:
+        log_and_print_func(f"❌ Failed to click the handle: {error}")
+
+    time.sleep(5)
+    if replace_existing:
+        try:
+            replace_substitute = driver.find_element(
+                By.CSS_SELECTOR, "label[for='replace-original'] .substitute"
+            )
+            try:
+                replace_substitute.click()
+            except Exception:
+                driver.execute_script("arguments[0].click();", replace_substitute)
+            log_and_print_func(
+                "✅ Clicked the 'Replace existing list with imported films' substitute icon."
+            )
+        except Exception as error:
+            log_and_print_func(f"❌ Failed to click the substitute icon: {error}")
+
+    time.sleep(1)
+    click_add_films_button(driver, log_and_print_func)
+    driver.get(edit_url)
+    time.sleep(5)
+
+    if description is not None:
+        update_import_description(driver, description, log_and_print_func)
+
+    log_and_print_func(f"✅ Saving the changes from {driver.current_url}.")
     save_button = find_save_button(driver)
     driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", save_button)
     try:
@@ -469,7 +632,7 @@ def login_to_letterboxd(driver, username, password, log_and_print_func):
                     "waiting up to 2 minutes for the sign-in form."
                 )
                 username_input, password_input, sign_in_button = wait_for_sign_in_form(
-                    driver, timeout=120
+                    driver, timeout=25
                 )
             else:
                 username_input, password_input, sign_in_button = wait_for_sign_in_form(
@@ -479,7 +642,7 @@ def login_to_letterboxd(driver, username, password, log_and_print_func):
             username_input.send_keys(username)
             password_input.clear()
             password_input.send_keys(password)
-            WebDriverWait(driver, 90, poll_frequency=0.5).until(
+            WebDriverWait(driver, 30, poll_frequency=0.5).until(
                 lambda current_driver: sign_in_button.is_displayed() and sign_in_button.is_enabled()
             )
             sign_in_button.click()
@@ -496,7 +659,7 @@ def login_to_letterboxd(driver, username, password, log_and_print_func):
                     "⚠️ Sign In did not redirect. Complete any Letterboxd security "
                     "verification in Chrome; waiting up to 2 minutes."
                 )
-                WebDriverWait(driver, 120, poll_frequency=0.5).until(
+                WebDriverWait(driver, 25, poll_frequency=0.5).until(
                     lambda current_driver: "/sign-in" not in current_driver.current_url
                 )
 
@@ -565,104 +728,104 @@ def update_letterboxd_lists():
 
     # Dictionary of lists to update
     lists_to_update_easy = {
-        "top_250_action_rating": "https://letterboxd.com/bigbadraj/list/top-250-highest-rated-action-narrative-feature/edit/",
-        "top_250_adventure_rating": "https://letterboxd.com/bigbadraj/list/top-250-highest-rated-adventure-narrative/edit/",
-        "top_250_animation_rating": "https://letterboxd.com/bigbadraj/list/top-250-highest-rated-animation-narrative/edit/",
-        "top_250_comedy_rating": "https://letterboxd.com/bigbadraj/list/top-250-highest-rated-comedy-narrative-feature/edit/",
-        "top_250_crime_rating": "https://letterboxd.com/bigbadraj/list/top-250-highest-rated-crime-narrative-feature/edit/",
-        "top_250_drama_rating": "https://letterboxd.com/bigbadraj/list/top-250-highest-rated-drama-narrative-feature/edit/",
-        "top_250_family_rating": "https://letterboxd.com/bigbadraj/list/top-250-highest-rated-family-narrative-feature/edit/",
-        "top_250_fantasy_rating": "https://letterboxd.com/bigbadraj/list/top-250-highest-rated-fantasy-narrative-feature/edit/",
-        "top_250_history_rating": "https://letterboxd.com/bigbadraj/list/top-250-highest-rated-history-narrative-feature/edit/",
-        "top_250_horror_rating": "https://letterboxd.com/bigbadraj/list/top-250-highest-rated-horror-narrative-feature/edit/",
-        "top_250_music_rating": "https://letterboxd.com/bigbadraj/list/top-250-highest-rated-music-narrative-feature/edit/",
-        "top_250_mystery_rating": "https://letterboxd.com/bigbadraj/list/top-250-highest-rated-mystery-narrative-feature/edit/",
-        "top_250_romance_rating": "https://letterboxd.com/bigbadraj/list/top-250-highest-rated-romance-narrative-feature/edit/",
-        "top_250_science-fiction_rating": "https://letterboxd.com/bigbadraj/list/top-250-highest-rated-science-fiction-narrative/edit/",
-        "top_250_thriller_rating": "https://letterboxd.com/bigbadraj/list/top-250-highest-rated-thriller-narrative/edit/",
-        "top_250_western_rating": "https://letterboxd.com/bigbadraj/list/top-250-highest-rated-western-narrative-feature/edit/",
-        "top_250_war_rating": "https://letterboxd.com/bigbadraj/list/top-250-highest-rated-war-narrative-feature/edit/",
-        "G_top_movies": "https://letterboxd.com/bigbadraj/list/top-100-g-rated-narrative-feature-films/edit/",
-        "PG_top_movies": "https://letterboxd.com/bigbadraj/list/top-250-pg-rated-narrative-feature-films/edit/",
-        "PG-13_top_movies": "https://letterboxd.com/bigbadraj/list/top-250-pg-13-rated-narrative-feature-films/edit/",
-        "R_top_movies": "https://letterboxd.com/bigbadraj/list/top-250-r-rated-narrative-feature-films/edit/",
-        "NC-17_top_movies": "https://letterboxd.com/bigbadraj/list/top-20-nc-17-rated-narrative-feature-films/edit/",
-        "north_america_top_movies": "https://letterboxd.com/bigbadraj/list/top-250-highest-rated-north-american-narrative/edit/",
-        "south_america_top_movies": "https://letterboxd.com/bigbadraj/list/top-250-highest-rated-south-american-narrative/edit/",
-        "europe_top_movies": "https://letterboxd.com/bigbadraj/list/top-250-highest-rated-european-narrative/edit/",
-        "asia_top_movies": "https://letterboxd.com/bigbadraj/list/top-250-highest-rated-asian-narrative-feature/edit/",
-        "africa_top_movies": "https://letterboxd.com/bigbadraj/list/top-100-highest-rated-african-narrative-feature/edit/",
-        "oceania_top_movies": "https://letterboxd.com/bigbadraj/list/top-75-highest-rated-australian-narrative-1/edit/",
-        "90_Minutes_or_Less_top_movies": "https://letterboxd.com/bigbadraj/list/the-top-250-highest-rated-films-of-90-minutes/edit/",
-        "2_Hours_or_Less_top_movies": "https://letterboxd.com/bigbadraj/list/the-top-250-highest-rated-films-of-120-minutes/edit/",
-        "3_Hours_or_Greater_top_movies": "https://letterboxd.com/bigbadraj/list/the-top-150-highest-rated-films-of-180-minutes/edit/",
-        "4_Hours_or_Greater_top_movies": "https://letterboxd.com/bigbadraj/list/the-top-20-highest-rated-films-of-240-minutes/edit/",
-        "top_250_action_popular": "https://letterboxd.com/bigbadraj/list/top-250-most-popular-action-narrative-feature/edit/",
-        "top_250_adventure_popular": "https://letterboxd.com/bigbadraj/list/top-250-most-popular-adventure-narrative/edit/",
-        "top_250_animation_popular": "https://letterboxd.com/bigbadraj/list/top-250-most-popular-animation-narrative/edit/",
-        "top_250_comedy_popular": "https://letterboxd.com/bigbadraj/list/top-250-most-popular-comedy-narrative-feature/edit/",
-        "top_250_crime_popular": "https://letterboxd.com/bigbadraj/list/top-250-most-popular-crime-narrative-feature/edit/",
-        "top_250_drama_popular": "https://letterboxd.com/bigbadraj/list/top-250-most-popular-drama-narrative-feature/edit/",
-        "top_250_family_popular": "https://letterboxd.com/bigbadraj/list/top-250-most-popular-family-narrative-feature/edit/",
-        "top_250_fantasy_popular": "https://letterboxd.com/bigbadraj/list/top-250-most-popular-fantasy-narrative-feature/edit/",
-        "top_250_history_popular": "https://letterboxd.com/bigbadraj/list/top-250-most-popular-history-narrative-feature/edit/",
-        "top_250_horror_popular": "https://letterboxd.com/bigbadraj/list/top-250-most-popular-horror-narrative-feature/edit/",
-        "top_250_music_popular": "https://letterboxd.com/bigbadraj/list/top-250-most-popular-music-narrative-feature/edit/",
-        "top_250_mystery_popular": "https://letterboxd.com/bigbadraj/list/top-250-most-popular-mystery-narrative-feature/edit/",
-        "top_250_romance_popular": "https://letterboxd.com/bigbadraj/list/top-250-most-popular-romance-narrative-feature/edit/",
-        "top_250_science-fiction_popular": "https://letterboxd.com/bigbadraj/list/top-250-most-popular-science-fiction-narrative/edit/",
-        "top_250_thriller_popular": "https://letterboxd.com/bigbadraj/list/top-250-most-popular-thriller-narrative-feature/edit/",
-        "top_250_western_popular": "https://letterboxd.com/bigbadraj/list/top-250-most-popular-western-narrative-feature/edit/",
-        "top_250_war_popular": "https://letterboxd.com/bigbadraj/list/top-250-most-popular-war-narrative-feature/edit/",
-        "G_pop_movies": "https://letterboxd.com/bigbadraj/list/top-200-most-popular-g-rated-narrative-feature/edit/",
-        "PG_pop_movies": "https://letterboxd.com/bigbadraj/list/top-250-most-popular-pg-rated-narrative-feature/edit/",
-        "PG-13_pop_movies": "https://letterboxd.com/bigbadraj/list/top-250-most-popular-pg-13-rated-narrative/edit/",
-        "R_pop_movies": "https://letterboxd.com/bigbadraj/list/top-250-most-popular-r-rated-narrative-feature/edit/",
-        "NC-17_pop_movies": "https://letterboxd.com/bigbadraj/list/top-25-most-popular-nc-17-rated-narrative/edit/",
-        "north_america_pop_movies": "https://letterboxd.com/bigbadraj/list/top-250-most-popular-north-american-narrative/edit/",
-        "south_america_pop_movies": "https://letterboxd.com/bigbadraj/list/top-100-most-popular-south-american-narrative/edit/",
-        "europe_pop_movies": "https://letterboxd.com/bigbadraj/list/top-250-most-popular-european-narrative-feature/edit/",
-        "asia_pop_movies": "https://letterboxd.com/bigbadraj/list/top-250-most-popular-asian-narrative-feature/edit/",
-        "africa_pop_movies": "https://letterboxd.com/bigbadraj/list/top-20-most-popular-african-narrative-feature/edit/",
-        "oceania_pop_movies": "https://letterboxd.com/bigbadraj/list/top-150-most-popular-australian-narrative/edit/",
-        "90_Minutes_or_Less_pop_movies": "https://letterboxd.com/bigbadraj/list/the-top-250-most-popular-films-of-90-minutes/edit/",
-        "2_Hours_or_Less_pop_movies": "https://letterboxd.com/bigbadraj/list/the-top-250-most-popular-films-of-120-minutes/edit/",
-        "3_Hours_or_Greater_pop_movies": "https://letterboxd.com/bigbadraj/list/the-top-75-most-popular-films-of-180-minutes/edit/",
-        "4_Hours_or_Greater_pop_movies": "https://letterboxd.com/bigbadraj/list/the-top-5-most-popular-films-of-240-minutes/edit/",
+        # "top_250_action_rating": "https://letterboxd.com/bigbadraj/list/top-250-highest-rated-action-narrative-feature/edit/",
+        # "top_250_adventure_rating": "https://letterboxd.com/bigbadraj/list/top-250-highest-rated-adventure-narrative/edit/",
+        # "top_250_animation_rating": "https://letterboxd.com/bigbadraj/list/top-250-highest-rated-animation-narrative/edit/",
+        # "top_250_comedy_rating": "https://letterboxd.com/bigbadraj/list/top-250-highest-rated-comedy-narrative-feature/edit/",
+        # "top_250_crime_rating": "https://letterboxd.com/bigbadraj/list/top-250-highest-rated-crime-narrative-feature/edit/",
+        # "top_250_drama_rating": "https://letterboxd.com/bigbadraj/list/top-250-highest-rated-drama-narrative-feature/edit/",
+        # "top_250_family_rating": "https://letterboxd.com/bigbadraj/list/top-250-highest-rated-family-narrative-feature/edit/",
+        # "top_250_fantasy_rating": "https://letterboxd.com/bigbadraj/list/top-250-highest-rated-fantasy-narrative-feature/edit/",
+        # "top_250_history_rating": "https://letterboxd.com/bigbadraj/list/top-250-highest-rated-history-narrative-feature/edit/",
+        # "top_250_horror_rating": "https://letterboxd.com/bigbadraj/list/top-250-highest-rated-horror-narrative-feature/edit/",
+        # "top_250_music_rating": "https://letterboxd.com/bigbadraj/list/top-250-highest-rated-music-narrative-feature/edit/",
+        # "top_250_mystery_rating": "https://letterboxd.com/bigbadraj/list/top-250-highest-rated-mystery-narrative-feature/edit/",
+        # "top_250_romance_rating": "https://letterboxd.com/bigbadraj/list/top-250-highest-rated-romance-narrative-feature/edit/",
+        # "top_250_science-fiction_rating": "https://letterboxd.com/bigbadraj/list/top-250-highest-rated-science-fiction-narrative/edit/",
+        # "top_250_thriller_rating": "https://letterboxd.com/bigbadraj/list/top-250-highest-rated-thriller-narrative/edit/",
+        # "top_250_western_rating": "https://letterboxd.com/bigbadraj/list/top-250-highest-rated-western-narrative-feature/edit/",
+        # "top_250_war_rating": "https://letterboxd.com/bigbadraj/list/top-250-highest-rated-war-narrative-feature/edit/",
+        # "G_top_movies": "https://letterboxd.com/bigbadraj/list/top-100-g-rated-narrative-feature-films/edit/",
+        # "PG_top_movies": "https://letterboxd.com/bigbadraj/list/top-250-pg-rated-narrative-feature-films/edit/",
+        # "PG-13_top_movies": "https://letterboxd.com/bigbadraj/list/top-250-pg-13-rated-narrative-feature-films/edit/",
+        # "R_top_movies": "https://letterboxd.com/bigbadraj/list/top-250-r-rated-narrative-feature-films/edit/",
+        # "NC-17_top_movies": "https://letterboxd.com/bigbadraj/list/top-20-nc-17-rated-narrative-feature-films/edit/",
+        # "north_america_top_movies": "https://letterboxd.com/bigbadraj/list/top-250-highest-rated-north-american-narrative/edit/",
+        # "south_america_top_movies": "https://letterboxd.com/bigbadraj/list/top-250-highest-rated-south-american-narrative/edit/",
+        # "europe_top_movies": "https://letterboxd.com/bigbadraj/list/top-250-highest-rated-european-narrative/edit/",
+        # "asia_top_movies": "https://letterboxd.com/bigbadraj/list/top-250-highest-rated-asian-narrative-feature/edit/",
+        # "africa_top_movies": "https://letterboxd.com/bigbadraj/list/top-100-highest-rated-african-narrative-feature/edit/",
+        # "oceania_top_movies": "https://letterboxd.com/bigbadraj/list/top-75-highest-rated-australian-narrative-1/edit/",
+        # "90_Minutes_or_Less_top_movies": "https://letterboxd.com/bigbadraj/list/the-top-250-highest-rated-films-of-90-minutes/edit/",
+        # "2_Hours_or_Less_top_movies": "https://letterboxd.com/bigbadraj/list/the-top-250-highest-rated-films-of-120-minutes/edit/",
+        # "3_Hours_or_Greater_top_movies": "https://letterboxd.com/bigbadraj/list/the-top-150-highest-rated-films-of-180-minutes/edit/",
+        # "4_Hours_or_Greater_top_movies": "https://letterboxd.com/bigbadraj/list/the-top-20-highest-rated-films-of-240-minutes/edit/",
+        # "top_250_action_popular": "https://letterboxd.com/bigbadraj/list/top-250-most-popular-action-narrative-feature/edit/",
+        # "top_250_adventure_popular": "https://letterboxd.com/bigbadraj/list/top-250-most-popular-adventure-narrative/edit/",
+        # "top_250_animation_popular": "https://letterboxd.com/bigbadraj/list/top-250-most-popular-animation-narrative/edit/",
+        # "top_250_comedy_popular": "https://letterboxd.com/bigbadraj/list/top-250-most-popular-comedy-narrative-feature/edit/",
+        # "top_250_crime_popular": "https://letterboxd.com/bigbadraj/list/top-250-most-popular-crime-narrative-feature/edit/",
+        # "top_250_drama_popular": "https://letterboxd.com/bigbadraj/list/top-250-most-popular-drama-narrative-feature/edit/",
+        # "top_250_family_popular": "https://letterboxd.com/bigbadraj/list/top-250-most-popular-family-narrative-feature/edit/",
+        # "top_250_fantasy_popular": "https://letterboxd.com/bigbadraj/list/top-250-most-popular-fantasy-narrative-feature/edit/",
+        # "top_250_history_popular": "https://letterboxd.com/bigbadraj/list/top-250-most-popular-history-narrative-feature/edit/",
+        # "top_250_horror_popular": "https://letterboxd.com/bigbadraj/list/top-250-most-popular-horror-narrative-feature/edit/",
+        # "top_250_music_popular": "https://letterboxd.com/bigbadraj/list/top-250-most-popular-music-narrative-feature/edit/",
+        # "top_250_mystery_popular": "https://letterboxd.com/bigbadraj/list/top-250-most-popular-mystery-narrative-feature/edit/",
+        # "top_250_romance_popular": "https://letterboxd.com/bigbadraj/list/top-250-most-popular-romance-narrative-feature/edit/",
+        # "top_250_science-fiction_popular": "https://letterboxd.com/bigbadraj/list/top-250-most-popular-science-fiction-narrative/edit/",
+        # "top_250_thriller_popular": "https://letterboxd.com/bigbadraj/list/top-250-most-popular-thriller-narrative-feature/edit/",
+        # "top_250_western_popular": "https://letterboxd.com/bigbadraj/list/top-250-most-popular-western-narrative-feature/edit/",
+        # "top_250_war_popular": "https://letterboxd.com/bigbadraj/list/top-250-most-popular-war-narrative-feature/edit/",
+        # "G_pop_movies": "https://letterboxd.com/bigbadraj/list/top-200-most-popular-g-rated-narrative-feature/edit/",
+        # "PG_pop_movies": "https://letterboxd.com/bigbadraj/list/top-250-most-popular-pg-rated-narrative-feature/edit/",
+        # "PG-13_pop_movies": "https://letterboxd.com/bigbadraj/list/top-250-most-popular-pg-13-rated-narrative/edit/",
+        # "R_pop_movies": "https://letterboxd.com/bigbadraj/list/top-250-most-popular-r-rated-narrative-feature/edit/",
+        # "NC-17_pop_movies": "https://letterboxd.com/bigbadraj/list/top-25-most-popular-nc-17-rated-narrative/edit/",
+        # "north_america_pop_movies": "https://letterboxd.com/bigbadraj/list/top-250-most-popular-north-american-narrative/edit/",
+        # "south_america_pop_movies": "https://letterboxd.com/bigbadraj/list/top-100-most-popular-south-american-narrative/edit/",
+        # "europe_pop_movies": "https://letterboxd.com/bigbadraj/list/top-250-most-popular-european-narrative-feature/edit/",
+        # "asia_pop_movies": "https://letterboxd.com/bigbadraj/list/top-250-most-popular-asian-narrative-feature/edit/",
+        # "africa_pop_movies": "https://letterboxd.com/bigbadraj/list/top-20-most-popular-african-narrative-feature/edit/",
+        # "oceania_pop_movies": "https://letterboxd.com/bigbadraj/list/top-150-most-popular-australian-narrative/edit/",
+        # "90_Minutes_or_Less_pop_movies": "https://letterboxd.com/bigbadraj/list/the-top-250-most-popular-films-of-90-minutes/edit/",
+        # "2_Hours_or_Less_pop_movies": "https://letterboxd.com/bigbadraj/list/the-top-250-most-popular-films-of-120-minutes/edit/",
+        # "3_Hours_or_Greater_pop_movies": "https://letterboxd.com/bigbadraj/list/the-top-75-most-popular-films-of-180-minutes/edit/",
+        # "4_Hours_or_Greater_pop_movies": "https://letterboxd.com/bigbadraj/list/the-top-5-most-popular-films-of-240-minutes/edit/",
     }
 
     personal_lists = {
-        "Personal_sleepaway_camp_movies_ranked": "https://letterboxd.com/bigbadraj/list/sleepaway-camp-movies-ranked/edit/",
-        "Personal_2026_releases_ranked": "https://letterboxd.com/bigbadraj/list/2026-releases-ranked/edit/",
-        "Personal_2025_releases_ranked": "https://letterboxd.com/bigbadraj/list/2025-releases-ranked/edit/",
-        "Personal_friday_the_13th_movies_ranked": "https://letterboxd.com/bigbadraj/list/friday-the-13th-movies-ranked/edit/",
-        "Personal_halloween_movies_ranked": "https://letterboxd.com/bigbadraj/list/halloween-movies-ranked/edit/",
-        "Personal_v_h_s_movies_ranked": "https://letterboxd.com/bigbadraj/list/v-h-s-movies-ranked/edit/",
-        "Personal_mission_impossible_movies_ranked": "https://letterboxd.com/bigbadraj/list/mission-impossible-movies-ranked/edit/",
-        "Personal_scream_movies_ranked": "https://letterboxd.com/bigbadraj/list/scream-movies-ranked/edit/",
-        "Personal_2024_releases_ranked": "https://letterboxd.com/bigbadraj/list/2024-releases-ranked/edit/",
-        "Personal_saw_movies_ranked": "https://letterboxd.com/bigbadraj/list/saw-movies-ranked/edit/",
-        "Personal_nightmare_on_elm_street_movies_ranked": "https://letterboxd.com/bigbadraj/list/nightmare-on-elm-street-movies-ranked/edit/",
-        "Personal_hannibal_movies_ranked": "https://letterboxd.com/bigbadraj/list/hannibal-movies-ranked/edit/",
-        "Personal_marvel_movies_ranked": "https://letterboxd.com/bigbadraj/list/marvel-movies-ranked/edit/",
-        "Personal_superhero_movies_ranked_1": "https://letterboxd.com/bigbadraj/list/superhero-movies-ranked-1/edit/",
-        "Personal_dc_movies_ranked_1": "https://letterboxd.com/bigbadraj/list/dc-movies-ranked-1/edit/",
+        # "Personal_sleepaway_camp_movies_ranked": "https://letterboxd.com/bigbadraj/list/sleepaway-camp-movies-ranked/edit/",
+        # "Personal_2026_releases_ranked": "https://letterboxd.com/bigbadraj/list/2026-releases-ranked/edit/",
+        # "Personal_2025_releases_ranked": "https://letterboxd.com/bigbadraj/list/2025-releases-ranked/edit/",
+        # "Personal_friday_the_13th_movies_ranked": "https://letterboxd.com/bigbadraj/list/friday-the-13th-movies-ranked/edit/",
+        # "Personal_halloween_movies_ranked": "https://letterboxd.com/bigbadraj/list/halloween-movies-ranked/edit/",
+        # "Personal_v_h_s_movies_ranked": "https://letterboxd.com/bigbadraj/list/v-h-s-movies-ranked/edit/",
+        # "Personal_mission_impossible_movies_ranked": "https://letterboxd.com/bigbadraj/list/mission-impossible-movies-ranked/edit/",
+        # "Personal_scream_movies_ranked": "https://letterboxd.com/bigbadraj/list/scream-movies-ranked/edit/",
+        # "Personal_2024_releases_ranked": "https://letterboxd.com/bigbadraj/list/2024-releases-ranked/edit/",
+        # "Personal_saw_movies_ranked": "https://letterboxd.com/bigbadraj/list/saw-movies-ranked/edit/",
+        # "Personal_nightmare_on_elm_street_movies_ranked": "https://letterboxd.com/bigbadraj/list/nightmare-on-elm-street-movies-ranked/edit/",
+        # "Personal_hannibal_movies_ranked": "https://letterboxd.com/bigbadraj/list/hannibal-movies-ranked/edit/",
+        # "Personal_marvel_movies_ranked": "https://letterboxd.com/bigbadraj/list/marvel-movies-ranked/edit/",
+        # "Personal_superhero_movies_ranked_1": "https://letterboxd.com/bigbadraj/list/superhero-movies-ranked-1/edit/",
+        # "Personal_dc_movies_ranked_1": "https://letterboxd.com/bigbadraj/list/dc-movies-ranked-1/edit/",
     }
 
     # Dictionary of lists to update with specific descriptions
     lists_with_descriptions = {
-        "film_titles": {
-            "url": "https://letterboxd.com/bigbadraj/list/top-250-highest-rated-things-on-letterboxd/edit/",
-            "description": "Minimum 1,000 ratings. Otherwise, anything on Letterboxd is eligible.\n\nLast Updated: {date}\n\n<a href=https://letterboxd.com/bigbadraj/list/the-official-list-index/> Check out more of the lists I update regularly! </a>"
-        },
-        "box_office_real": {
-            "url": "https://letterboxd.com/bigbadraj/list/top-250-highest-grossing-movies-of-all-time-1/edit/",
-            "description": "According to Box Office Mojo.\n\nLast Updated: {date}\n\n<a href=https://letterboxd.com/bigbadraj/list/the-official-list-index/> Check out more of the lists I update regularly! </a>"
-        },
-        "box_office_inflated": {
-            "url": "https://letterboxd.com/bigbadraj/list/top-250-highest-grossing-domestic-movies/edit/",
-            "description": "According to Box Office Mojo.\n\nLast Updated: {date}\n\n<a href=https://letterboxd.com/bigbadraj/list/the-official-list-index/> Check out more of the lists I update regularly! </a>"
-        }
+        # "film_titles": {
+        #     "url": "https://letterboxd.com/bigbadraj/list/top-250-highest-rated-things-on-letterboxd/edit/",
+        #     "description": "Minimum 1,000 ratings. Otherwise, anything on Letterboxd is eligible.\n\nLast Updated: {date}\n\n<a href=https://letterboxd.com/bigbadraj/list/the-official-list-index/> Check out more of the lists I update regularly! </a>"
+        # },
+        # "box_office_real": {
+        #     "url": "https://letterboxd.com/bigbadraj/list/top-250-highest-grossing-movies-of-all-time-1/edit/",
+        #     "description": "According to Box Office Mojo.\n\nLast Updated: {date}\n\n<a href=https://letterboxd.com/bigbadraj/list/the-official-list-index/> Check out more of the lists I update regularly! </a>"
+        # },
+        # "box_office_inflated": {
+        #     "url": "https://letterboxd.com/bigbadraj/list/top-250-highest-grossing-domestic-movies/edit/",
+        #     "description": "According to Box Office Mojo.\n\nLast Updated: {date}\n\n<a href=https://letterboxd.com/bigbadraj/list/the-official-list-index/> Check out more of the lists I update regularly! </a>"
+        # }
     }
 
     # Handle special lists
@@ -762,7 +925,10 @@ def update_letterboxd_lists():
                 # Step 4: Click the "Hide Successful Matches" button
                 try:
                     hide_successful_matches_handle = driver.find_element(By.CSS_SELECTOR, ".import-toggle .handle")
-                    hide_successful_matches_handle.click()
+                    try:
+                        hide_successful_matches_handle.click()
+                    except Exception:
+                        driver.execute_script("arguments[0].click();", hide_successful_matches_handle)
                     log_and_print("✅ Clicked the 'Hide Successful Matches' handle.")
                 except Exception as e:
                     log_and_print(f"❌ Failed to click the handle: {str(e)}")
@@ -772,22 +938,24 @@ def update_letterboxd_lists():
                 # Step 5: Click the "Replace existing list with imported films" checkbox
                 try:
                     replace_substitute = driver.find_element(By.CSS_SELECTOR, "label[for='replace-original'] .substitute")
-                    replace_substitute.click()
+                    try:
+                        replace_substitute.click()
+                    except Exception:
+                        driver.execute_script("arguments[0].click();", replace_substitute)
                     log_and_print("✅ Clicked the 'Replace existing list with imported films' substitute icon.")
                 except Exception as e:
                     log_and_print(f"❌ Failed to click the substitute icon: {str(e)}")
 
                 time.sleep(1)  
 
-                # Step 6: Click the "Add films to list" button
-                log_and_print("✅ Clicking the 'Add films to list' button.")
-                add_films_button = driver.find_element(By.CSS_SELECTOR, ".add-import-films-to-list")
-                add_films_button.click()
-                time.sleep(5)  
+                # Step 5: Click the "Add films to list" button
+                click_add_films_button(driver, log_and_print)
 
                 # Step 7: Replace the existing list description with the copied text file contents
                 if 'file_contents' in locals():
-                    description_field = driver.find_element(By.CSS_SELECTOR, "textarea[name='notes']")  
+                    description_field = WebDriverWait(driver, 60, poll_frequency=0.5).until(
+                        EC.visibility_of_element_located((By.CSS_SELECTOR, "textarea[name='notes']"))
+                    )
 
                     try:
                         description_field.clear()  
@@ -916,7 +1084,10 @@ def update_letterboxd_lists():
                 # Step 4: Click the "Hide Successful Matches" button
                 try:
                     hide_successful_matches_handle = driver.find_element(By.CSS_SELECTOR, ".import-toggle .handle")
-                    hide_successful_matches_handle.click()
+                    try:
+                        hide_successful_matches_handle.click()
+                    except Exception:
+                        driver.execute_script("arguments[0].click();", hide_successful_matches_handle)
                     log_and_print("✅ Clicked the 'Hide Successful Matches' handle.")
                 except Exception as e:
                     log_and_print(f"❌ Failed to click the handle: {str(e)}")
@@ -1022,6 +1193,26 @@ def update_letterboxd_lists():
                 with open(matching_files[0], 'r', encoding='utf-8') as txt_file:
                     file_contents = txt_file.read()
 
+                for import_number in range(1, 4):
+                    csv_file_name = details[f"csv_file_name_{import_number}"]
+                    import_csv_into_list(
+                        driver,
+                        details["url"],
+                        os.path.join(output_dir, csv_file_name),
+                        csv_file_name,
+                        log_and_print,
+                        replace_existing=import_number == 1,
+                        description=file_contents if import_number == 1 else None,
+                        open_editor=import_number == 1,
+                    )
+
+                log_and_print(f"✅ Successfully updated special list: {list_name}")
+                results.append({
+                    'list_name': list_name,
+                    'status': 'Successfully updated'
+                })
+                continue
+
                 # Open the list only after all required files are available.
                 csv_file_name = details["csv_file_name_1"]
                 driver.get(details["url"])
@@ -1054,19 +1245,23 @@ def update_letterboxd_lists():
                 time.sleep(1)  
                 pyautogui.press('enter')  # Select the filtered file
 
+                time.sleep(2)
                 wait_for_import_results(driver)
 
-                # Step 3: Click the "Hide Successful Matches" button
+                # Step 3: Hide successful matches using the same control as regular lists.
                 try:
                     hide_successful_matches_handle = driver.find_element(By.CSS_SELECTOR, ".import-toggle .handle")
-                    hide_successful_matches_handle.click()
+                    try:
+                        hide_successful_matches_handle.click()
+                    except Exception:
+                        driver.execute_script("arguments[0].click();", hide_successful_matches_handle)
                     log_and_print("✅ Clicked the 'Hide Successful Matches' handle.")
                 except Exception as e:
                     log_and_print(f"❌ Failed to click the handle: {str(e)}")
 
                 time.sleep(7)  
                 
-                # Step 4: Click the "Replace existing list with imported films" checkbox
+                # Step 4: Replace the existing list using the real checkbox input.
                 try:
                     replace_substitute = driver.find_element(By.CSS_SELECTOR, "label[for='replace-original'] .substitute")
                     replace_substitute.click()
@@ -1077,18 +1272,14 @@ def update_letterboxd_lists():
                 time.sleep(1)  
 
                 # Step 5: Click the "Add films to list" button
-                log_and_print("✅ Clicking the 'Add films to list' button.")
-                add_films_button = driver.find_element(By.CSS_SELECTOR, ".add-import-films-to-list")
-                add_films_button.click()
-                time.sleep(5)  
+                click_add_films_button(driver, log_and_print)
 
                 # Step 6: Replace the existing list description with the copied text file contents
                 if 'file_contents' in locals():
-                    description_field = driver.find_element(By.CSS_SELECTOR, "textarea[name='notes']") 
-
+                    description_field = driver.find_element(By.CSS_SELECTOR, "textarea[name='notes']")
                     try:
-                        description_field.clear()  
-                        description_field.send_keys(file_contents) 
+                        description_field.clear()
+                        description_field.send_keys(file_contents)
                         log_and_print("✅ Successfully added text using send_keys.")
                     except Exception as e:
                         log_and_print(f"❌ Failed to add text using send_keys: {str(e)}")
@@ -1145,9 +1336,10 @@ def update_letterboxd_lists():
                 time.sleep(1)  
                 pyautogui.press('enter')  # Select the filtered file
 
+                time.sleep(2)
                 wait_for_import_results(driver)
 
-                # Step 11: Click the "Hide Successful Matches" button again
+                # Step 11: Hide successful matches using the same control as regular lists.
                 try:
                     hide_successful_matches_handle = driver.find_element(By.CSS_SELECTOR, ".import-toggle .handle")
                     hide_successful_matches_handle.click()
@@ -1158,10 +1350,7 @@ def update_letterboxd_lists():
                 time.sleep(7)
 
                 # Step 11: Click the "Add films to list" button again
-                log_and_print("✅ Clicking the 'Add films to list' button.")
-                add_films_button = driver.find_element(By.CSS_SELECTOR, ".add-import-films-to-list")
-                add_films_button.click()
-                time.sleep(5)   
+                click_add_films_button(driver, log_and_print)
 
                 # Step 12: Save the changes for the second import
                 time.sleep(1)
@@ -1216,9 +1405,10 @@ def update_letterboxd_lists():
                 time.sleep(1)  
                 pyautogui.press('enter')  # Select the filtered file
 
+                time.sleep(2)
                 wait_for_import_results(driver)
 
-                # Step 16: Click the "Hide Successful Matches" button again
+                # Step 16: Hide successful matches using the same control as regular lists.
                 try:
                     hide_successful_matches_handle = driver.find_element(By.CSS_SELECTOR, ".import-toggle .handle")
                     hide_successful_matches_handle.click()
@@ -1229,10 +1419,7 @@ def update_letterboxd_lists():
                 time.sleep(7)
 
                 # Step 17: Click the "Add films to list" button again
-                log_and_print("✅ Clicking the 'Add films to list' button.")
-                add_films_button = driver.find_element(By.CSS_SELECTOR, ".add-import-films-to-list")
-                add_films_button.click()
-                time.sleep(5)   
+                click_add_films_button(driver, log_and_print)
 
                 # Step 18: Save the changes for the third import
                 time.sleep(1)

@@ -1043,6 +1043,19 @@ def is_network_error(error: Exception) -> bool:
     return any(keyword in error_str for keyword in network_keywords)
 
 
+def is_dead_driver_error(error: Exception) -> bool:
+    """Identify errors indicating that ChromeDriver's local session has died."""
+    error_text = str(error).lower()
+    return any(indicator in error_text for indicator in (
+        'failed to establish a new connection',
+        'connection refused',
+        'winerror 10054',
+        'target window already closed',
+        'no such window',
+        'invalid session id',
+    ))
+
+
 def is_retryable_error(error):
     """Determine if an error should be retried based on error type and message."""
     error_str = str(error).lower()
@@ -1229,6 +1242,31 @@ class LetterboxdScraper:
     def _maybe_restart_driver(self):
         if self._pages_since_driver_start >= CHROME_RESTART_EVERY_PAGES:
             self._restart_driver(f"every {CHROME_RESTART_EVERY_PAGES} listing pages")
+
+    def _find_elements_with_recovery(self, by, selector, film_url, field_name):
+        """Retry one DOM lookup after replacing a dead ChromeDriver session."""
+        try:
+            return self.driver.find_elements(by, selector)
+        except Exception as error:
+            if not is_dead_driver_error(error):
+                raise
+            print_to_csv(f"ChromeDriver session failed while extracting {field_name}; restarting Chrome.")
+            self._restart_driver(f"dead session during {field_name} extraction")
+            self._navigate_to_film(film_url)
+            return self.driver.find_elements(by, selector)
+
+    def _navigate_to_film(self, film_url: str):
+        """Navigate Selenium to a film and wait until its document is loaded."""
+        self.driver.get(film_url)
+        WebDriverWait(self.driver, 10).until(
+            EC.presence_of_element_located((By.CSS_SELECTOR, 'meta[property="og:title"]'))
+        )
+        expected_path = self._normalize_listing_film_url(film_url)
+        actual_path = self._normalize_listing_film_url(self.driver.current_url)
+        if expected_path != actual_path:
+            raise RuntimeError(
+                f"Film navigation mismatch: expected {film_url}, got {self.driver.current_url}"
+            )
 
     def _fetch_http(self, url: str, timeout: int) -> Optional[str]:
         try:
@@ -1469,20 +1507,14 @@ class LetterboxdScraper:
             if not self.is_browser_responsive():
                 if not self.recover_browser():
                     return None
-            self.driver.get(film_url)
-            WebDriverWait(self.driver, 10).until(
-                EC.presence_of_element_located((By.CSS_SELECTOR, 'meta[property="og:title"]'))
-            )
+            self._navigate_to_film(film_url)
             return self.driver.page_source
         except Exception as e:
             err = str(e).lower()
             if "no such window" in err or "target window already closed" in err:
                 self._restart_driver("browser window closed during film fetch")
                 try:
-                    self.driver.get(film_url)
-                    WebDriverWait(self.driver, 10).until(
-                        EC.presence_of_element_located((By.CSS_SELECTOR, 'meta[property="og:title"]'))
-                    )
+                    self._navigate_to_film(film_url)
                     return self.driver.page_source
                 except Exception:
                     return None
@@ -1666,10 +1698,7 @@ class LetterboxdScraper:
                 missing_fields = [field for field in required_fields if not info.get(field)]
                 if not info or info == {} or missing_fields:
                     try:
-                        self.driver.get(film_url)
-                        WebDriverWait(self.driver, 10).until(
-                            EC.presence_of_element_located((By.CSS_SELECTOR, 'meta[property=\"og:title\"]'))
-                        )
+                        self._navigate_to_film(film_url)
                         #time.sleep(random.uniform(1.0, 1.5))
                         
                         # Extract basic info
@@ -1714,9 +1743,11 @@ class LetterboxdScraper:
                         # Extract actors
                         movie_actors = []
                         try:
-                            actor_elements = self.driver.find_elements(
+                            actor_elements = self._find_elements_with_recovery(
                                 By.CSS_SELECTOR,
-                                f'{SEL_TAB_CAST} a.text-slug[href*="/actor/"]'
+                                f'{SEL_TAB_CAST} a.text-slug[href*="/actor/"]',
+                                film_url,
+                                'actors',
                             )
                             for actor in actor_elements:
                                 actor_name = actor.text.strip()
@@ -1728,9 +1759,11 @@ class LetterboxdScraper:
                         # Extract genres
                         movie_genres = []
                         try:
-                            genre_elements = self.driver.find_elements(
+                            genre_elements = self._find_elements_with_recovery(
                                 By.CSS_SELECTOR,
-                                f'{SEL_TAB_GENRES} .text-sluglist a.text-slug[href*="/films/genre/"]'
+                                f'{SEL_TAB_GENRES} .text-sluglist a.text-slug[href*="/films/genre/"]',
+                                film_url,
+                                'genres',
                             )
                             for genre in genre_elements:
                                 genre_name = genre.get_attribute('textContent').strip()
@@ -1742,9 +1775,11 @@ class LetterboxdScraper:
                         # Extract studios
                         movie_studios = []
                         try:
-                            studio_elements = self.driver.find_elements(
+                            studio_elements = self._find_elements_with_recovery(
                                 By.CSS_SELECTOR,
-                                f'{SEL_TAB_DETAILS} .text-sluglist a.text-slug[href*="/studio/"]'
+                                f'{SEL_TAB_DETAILS} .text-sluglist a.text-slug[href*="/studio/"]',
+                                film_url,
+                                'studios',
                             )
                             for studio in studio_elements:
                                 studio_name = studio.get_attribute('textContent').strip()
@@ -1770,9 +1805,11 @@ class LetterboxdScraper:
                         # Extract countries
                         movie_countries = []
                         try:
-                            country_elements = self.driver.find_elements(
+                            country_elements = self._find_elements_with_recovery(
                                 By.CSS_SELECTOR,
-                                f'{SEL_TAB_DETAILS} .text-sluglist a.text-slug[href*="/films/country/"]'
+                                f'{SEL_TAB_DETAILS} .text-sluglist a.text-slug[href*="/films/country/"]',
+                                film_url,
+                                'countries',
                             )
                             for country in country_elements:
                                 country_name = country.get_attribute('textContent').strip()
@@ -1931,7 +1968,7 @@ class LetterboxdScraper:
                     break
                 if runtime is None:
                     try:
-                        self.driver.get(film_url)
+                        self._navigate_to_film(film_url)
                         WebDriverWait(self.driver, 10).until(
                             EC.presence_of_element_located((By.CSS_SELECTOR, 'p.text-link.text-footer'))
                         )
@@ -1952,6 +1989,10 @@ class LetterboxdScraper:
                     print_to_csv(f"⚠️ {film_title} skipped due to missing runtime")
                     if retry < movie_retries - 1:
                         print_to_csv(f"Retrying... (Attempt {retry + 1}/{movie_retries})")
+                        try:
+                            self._navigate_to_film(film_url)
+                        except Exception as e:
+                            print_to_csv(f"Error reloading film page for {film_title}: {str(e)}")
                         time.sleep(2)
                         continue
                     self.rejected_movies_count += 1
@@ -2064,13 +2105,10 @@ class LetterboxdScraper:
     def process_approved_movie(self, film_title: str, release_year: str, tmdb_id: str, film_url: str, approval_type: str):
         """Process a movie that has been approved."""
         try:
-            current = (self.driver.current_url or '').split('?')[0].rstrip('/')
-            target = (film_url or '').split('?')[0].rstrip('/')
-            if target and target not in current:
-                self.driver.get(film_url)
-                WebDriverWait(self.driver, 10).until(
-                    EC.presence_of_element_located((By.CSS_SELECTOR, 'meta[property="og:title"]'))
-                )
+            current = self._normalize_listing_film_url(self.driver.current_url)
+            target = self._normalize_listing_film_url(film_url)
+            if target and target != current:
+                self._navigate_to_film(film_url)
             # Extract TMDB ID from page source
             try:
                 page_source = self.driver.page_source
