@@ -1,15 +1,17 @@
 import sys
 import time
+from selenium import webdriver
 import undetected_chromedriver as uc
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.common.keys import Keys
-from selenium.common.exceptions import NoSuchWindowException
+from selenium.common.exceptions import NoSuchWindowException, NoSuchElementException, TimeoutException
 import pandas as pd
 import os
 import platform
 import glob
+import subprocess
 import pyautogui
 from tqdm import tqdm
 import csv
@@ -18,7 +20,7 @@ import logging
 import traceback
 from credentials_loader import load_credentials
 
-# Silence undetected_chromedriver's noisy __del__ that logs WinError 6 on shutdown
+# Explicit driver.quit() handles shutdown; suppress duplicate destructor cleanup.
 try:
     uc.Chrome.__del__ = lambda self: None
 except Exception:
@@ -51,10 +53,10 @@ paths = get_os_specific_paths()
 output_dir = paths['output_dir']
 base_dir = paths['base_dir']
 
-# Optional: Chrome user data dir if you want to reuse a profile (e.g. already logged into Letterboxd).
-# Leave None to use a fresh profile each run. Close any open Chrome using that profile before running.
-CHROME_USER_DATA_DIR = None  # e.g. r'C:\Users\bigba\AppData\Local\Google\Chrome\User Data'
-CHROME_PROFILE_DIR = None    # e.g. 'Default' or 'Profile 1'
+# Profile reuse is opt-in. A clean profile avoids Chrome profile locks and
+# starts reliably; set LETTERBOXD_CHROME_USER_DATA_DIR to reuse a profile.
+CHROME_USER_DATA_DIR = os.environ.get('LETTERBOXD_CHROME_USER_DATA_DIR')
+CHROME_PROFILE_DIR = os.environ.get('LETTERBOXD_CHROME_PROFILE_DIR', 'Default')
 
 # Define a custom print function
 def log_and_print(message: str):
@@ -73,42 +75,92 @@ def log_and_print(message: str):
         writer = csv.writer(file)
         writer.writerow([message])  # Write the message as a new row
 
+def find_import_button(driver):
+    """Return the visible, enabled Letterboxd import button for the current page state."""
+    selectors = [
+        "button.js-import-trigger",
+        "button[aria-label*='Import titles using our CSV format']",
+        ".list-import-link",
+    ]
+
+    for selector in selectors:
+        for element in driver.find_elements(By.CSS_SELECTOR, selector):
+            if element.is_displayed() and element.is_enabled():
+                return element
+
+    for element in driver.find_elements(By.XPATH, "//button[contains(translate(@aria-label, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'import') or normalize-space(.)='Import']"):
+        if element.is_displayed() and element.is_enabled():
+            return element
+
+    raise NoSuchElementException("Could not locate Letterboxd import button using current selectors.")
+
+
+def find_save_button(driver):
+    """Return the visible, enabled Letterboxd save button for the current page state."""
+    selectors = [
+        "button[type='submit'] .label",
+        "button.button-neue.-primary",
+        "button[type='submit']",
+        "#list-edit-save",
+    ]
+
+    for selector in selectors:
+        if selector.startswith("#"):
+            try:
+                element = driver.find_element(By.CSS_SELECTOR, selector)
+                if element.is_displayed() and element.is_enabled():
+                    return element
+            except Exception:
+                continue
+            continue
+
+        for element in driver.find_elements(By.CSS_SELECTOR, selector):
+            if element.is_displayed() and element.is_enabled():
+                return element
+
+    for element in driver.find_elements(By.XPATH, "//button[normalize-space(.)='Save' or @type='submit']"):
+        if element.is_displayed() and element.is_enabled():
+            return element
+
+    raise NoSuchElementException("Could not locate Letterboxd save button using current selectors.")
+
+
 def safe_click_import_button(driver, log_and_print_func):
     """
     Safely click the import button with proper waiting and retry logic.
     This prevents the 'saving' element from obscuring the button.
     """
     log_and_print_func("✅ Clicking the Import button.")
-    
+
     # Wait a bit for any ongoing operations to complete
     time.sleep(5)
-    
+
     # Retry mechanism for clicking import button
     max_retries = 3
     for attempt in range(max_retries):
         try:
-            # Check if saving indicator exists and wait briefly for it to disappear
             saving_elements = driver.find_elements(By.CSS_SELECTOR, ".saving")
             if saving_elements:
                 log_and_print_func("✅ Saving indicator detected, waiting briefly...")
-                time.sleep(3)  # Brief wait for saving to complete
-            
-            # Find and click the import button
-            import_button = driver.find_element(By.CSS_SELECTOR, ".list-import-link")
-            
-            # Check if element is clickable with a shorter timeout
-            WebDriverWait(driver, 5).until(EC.element_to_be_clickable((By.CSS_SELECTOR, ".list-import-link")))
-            import_button.click()
+                time.sleep(3)
+
+            import_button = find_import_button(driver)
+            WebDriverWait(driver, 5).until(lambda current_driver: import_button.is_displayed() and import_button.is_enabled())
+            driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", import_button)
+            try:
+                import_button.click()
+            except Exception:
+                driver.execute_script("arguments[0].click();", import_button)
             log_and_print_func("✅ Successfully clicked import button.")
             break
-            
+
         except Exception as e:
             log_and_print_func(f"⚠️ Attempt {attempt + 1} failed to click import button: {str(e)}")
             if attempt < max_retries - 1:
-                time.sleep(3)  # Shorter wait between retries
+                time.sleep(3)
             else:
                 raise e
-    
+
     time.sleep(2)
 
 
@@ -122,8 +174,16 @@ def wait_for_import_results(driver, timeout=90):
 def wait_for_list_editor(driver, timeout=30):
     """Wait until the list editor is ready for another action."""
     WebDriverWait(driver, timeout, poll_frequency=0.5).until(
-        EC.presence_of_element_located((By.CSS_SELECTOR, ".list-import-link"))
+        lambda current_driver: _has_import_button(current_driver)
     )
+
+
+def _has_import_button(driver):
+    try:
+        button = find_import_button(driver)
+        return button.is_displayed() and button.is_enabled()
+    except Exception:
+        return False
 
 
 def wait_for_visible_input(driver, name, timeout=15):
@@ -137,6 +197,61 @@ def wait_for_visible_input(driver, name, timeout=15):
     return WebDriverWait(driver, timeout, poll_frequency=0.5).until(find_input)
 
 
+def wait_for_sign_in_form(driver, timeout=30):
+    """Wait for the visible Letterboxd sign-in fields and control to render."""
+    def find_form(current_driver):
+        try:
+            username_input = next(
+                (element for element in current_driver.find_elements(By.NAME, "username")
+                 if element.is_displayed() and element.is_enabled()),
+                None,
+            )
+            password_input = next(
+                (element for element in current_driver.find_elements(By.NAME, "password")
+                 if element.is_displayed() and element.is_enabled()),
+                None,
+            )
+            sign_in_button = next(
+                (element for element in current_driver.find_elements(
+                    By.XPATH,
+                    "//button[@type='submit' or contains(translate(normalize-space(.), "
+                    "'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'sign in') "
+                    "or contains(translate(@aria-label, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', "
+                    "'abcdefghijklmnopqrstuvwxyz'), 'sign in')] | //input[@type='submit']",
+                )
+                 if element.is_displayed()),
+                None,
+            )
+            if username_input and password_input and sign_in_button:
+                return username_input, password_input, sign_in_button
+        except (NoSuchWindowException, NoSuchElementException):
+            return False
+        return False
+
+    return WebDriverWait(driver, timeout, poll_frequency=0.5).until(find_form)
+
+
+def is_security_check_page(driver):
+    """Return whether Letterboxd or its edge security layer is asking for verification."""
+    try:
+        title = (driver.title or '').lower()
+        body_text = str(
+            driver.execute_script("return document.body ? document.body.innerText : ''") or ''
+        ).lower()
+        security_markers = (
+            'just a moment',
+            'checking your browser',
+            'verify you are human',
+            'verifying you are human',
+            'security check',
+            'performing security verification',
+            'enable javascript and cookies to continue',
+        )
+        return any(marker in f"{title} {body_text}" for marker in security_markers)
+    except Exception:
+        return False
+
+
 def wait_for_visible_sign_in_link(driver, timeout=15):
     """Return the visible sign-in link after the homepage finishes rendering."""
     def find_link(current_driver):
@@ -146,6 +261,276 @@ def wait_for_visible_sign_in_link(driver, timeout=15):
         return False
 
     return WebDriverWait(driver, timeout, poll_frequency=0.5).until(find_link)
+
+
+def import_simple_list(driver, edit_url, csv_path, csv_file_name, log_and_print_func):
+    """Replace a list from a CSV without changing its description."""
+    driver.get(edit_url)
+    time.sleep(2)
+    safe_click_import_button(driver, log_and_print_func)
+
+    log_and_print_func(f"✅ Selecting CSV file: {csv_file_name}")
+    time.sleep(1)
+    pyautogui.hotkey('alt', 'd')
+    time.sleep(1)
+    pyautogui.typewrite(os.path.dirname(csv_path), interval=0.1)
+    pyautogui.press('enter')
+    time.sleep(1)
+    pyautogui.hotkey('alt', 'n')
+    time.sleep(0.5)
+    pyautogui.typewrite(csv_file_name, interval=0.1)
+    time.sleep(1)
+    pyautogui.press('enter')
+
+    wait_for_import_results(driver)
+    try:
+        hide_successful_matches_handle = driver.find_element(
+            By.CSS_SELECTOR, ".import-toggle .handle"
+        )
+        hide_successful_matches_handle.click()
+        log_and_print_func("✅ Clicked the 'Hide Successful Matches' handle.")
+    except Exception as error:
+        log_and_print_func(f"⚠️ Failed to click the successful-matches handle: {error}")
+
+    time.sleep(5)
+    try:
+        replace_substitute = driver.find_element(
+            By.CSS_SELECTOR, "label[for='replace-original'] .substitute"
+        )
+        replace_substitute.click()
+        log_and_print_func("✅ Selected replacement of the existing list.")
+    except Exception as error:
+        log_and_print_func(f"⚠️ Failed to select list replacement: {error}")
+
+    time.sleep(1)
+    log_and_print_func("✅ Clicking the 'Add films to list' button.")
+    driver.find_element(By.CSS_SELECTOR, ".add-import-films-to-list").click()
+    time.sleep(5)
+    save_button = find_save_button(driver)
+    driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", save_button)
+    try:
+        save_button.click()
+    except Exception:
+        driver.execute_script("arguments[0].click();", save_button)
+    time.sleep(7)
+
+
+def is_blank_or_unusable_page(driver):
+    """Detect a blank, error, or otherwise unusable browser page before continuing."""
+    try:
+        current_url = (driver.current_url or '').lower()
+        if 'about:blank' in current_url or 'chrome-error://' in current_url or 'chrome://crash' in current_url:
+            return True
+    except Exception:
+        return True
+
+    try:
+        title = (driver.title or '').lower()
+        body_text = str(driver.execute_script("return document.body ? document.body.innerText : ''") or '').lower()
+        combined = f"{title} {body_text}"
+
+        error_markers = [
+            'error on page',
+            'this page is not available',
+            'this page isn\'t available',
+            'page not available',
+            'page could not be loaded',
+            'something went wrong',
+            'unable to load',
+            'internal server error',
+            'bad gateway',
+            'service unavailable',
+            'page error',
+            'not available',
+        ]
+
+        if any(marker in combined for marker in error_markers):
+            return True
+
+        if len(body_text.strip()) < 20:
+            return True
+    except Exception:
+        return True
+
+    try:
+        username_present = bool(driver.find_elements(By.NAME, "username")) or bool(driver.find_elements(By.ID, "username"))
+        password_present = bool(driver.find_elements(By.NAME, "password")) or bool(driver.find_elements(By.ID, "password"))
+        return not (username_present and password_present)
+    except Exception:
+        return False
+
+
+def create_chrome_driver(log_and_print_func):
+    """Create a fresh undetected Chrome driver for Letterboxd."""
+    options = uc.ChromeOptions()
+    options.page_load_strategy = 'eager'
+    options.add_argument("--window-size=1280,900")
+    options.add_argument("--start-maximized")
+    options.add_argument("--disable-dev-shm-usage")
+    options.add_argument("--disable-gpu")
+    options.add_argument("--disable-extensions")
+    options.add_argument("--disable-blink-features=AutomationControlled")
+    options.add_experimental_option(
+        "prefs",
+        {
+            "profile.default_content_setting_values.javascript": 1,
+        },
+    )
+    chrome_profile_available = bool(CHROME_USER_DATA_DIR and os.path.isdir(CHROME_USER_DATA_DIR))
+    if chrome_profile_available:
+        try:
+            chrome_processes = subprocess.run(
+                ["tasklist", "/FI", "IMAGENAME eq chrome.exe"],
+                capture_output=True,
+                text=True,
+                check=False,
+            ).stdout
+            chrome_profile_available = "chrome.exe" not in chrome_processes.lower()
+        except Exception:
+            pass
+
+    if chrome_profile_available:
+        log_and_print_func(
+            f"✅ Reusing Chrome profile: {CHROME_USER_DATA_DIR} ({CHROME_PROFILE_DIR})"
+        )
+        options.add_argument(f"--user-data-dir={CHROME_USER_DATA_DIR}")
+        if CHROME_PROFILE_DIR:
+            options.add_argument(f"--profile-directory={CHROME_PROFILE_DIR}")
+    elif CHROME_USER_DATA_DIR:
+        log_and_print_func(
+            "⚠️ Chrome is already running; using a clean browser profile to avoid a locked-profile session."
+        )
+
+    def _detect_chrome_major_version():
+        try:
+            import winreg
+            for hive in (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE):
+                for subkey in (
+                    r"Software\Google\Chrome\BLBeacon",
+                    r"Software\WOW6432Node\Google\Chrome\BLBeacon",
+                ):
+                    try:
+                        k = winreg.OpenKey(hive, subkey)
+                        v, _ = winreg.QueryValueEx(k, "version")
+                        if v:
+                            return int(str(v).split(".", 1)[0])
+                    except Exception:
+                        continue
+        except Exception:
+            pass
+        try:
+            import subprocess
+            out = subprocess.check_output(["chrome", "--version"], stderr=subprocess.STDOUT, text=True)
+            for token in out.split():
+                if token and token[0].isdigit() and "." in token:
+                    return int(token.split(".", 1)[0])
+        except Exception:
+            pass
+        return None
+
+    log_and_print_func("✅ Starting undetected Chrome driver.")
+    chrome_major = _detect_chrome_major_version()
+    if chrome_major:
+        driver = uc.Chrome(options=options, use_subprocess=True, version_main=chrome_major)
+    else:
+        driver = uc.Chrome(options=options, use_subprocess=True)
+    driver.set_page_load_timeout(60)
+    log_and_print_func("✅ Chrome driver started.")
+    return driver
+
+
+def login_to_letterboxd(driver, username, password, log_and_print_func):
+    """Sign in with retries and browser reset if a blank/invalid page is encountered."""
+    max_attempts = 5
+    for attempt in range(1, max_attempts + 1):
+        try:
+            log_and_print_func(f"✅ Attempting Letterboxd sign-in (attempt {attempt}/{max_attempts}).")
+            driver.get("https://letterboxd.com/sign-in/")
+            log_and_print_func("✅ Loading Letterboxd sign-in page directly.")
+            time.sleep(3)
+            if is_security_check_page(driver):
+                log_and_print_func(
+                    "⚠️ Letterboxd security verification is active. Complete it in Chrome; "
+                    "waiting up to 2 minutes for the sign-in form."
+                )
+                username_input, password_input, sign_in_button = wait_for_sign_in_form(
+                    driver, timeout=120
+                )
+            else:
+                username_input, password_input, sign_in_button = wait_for_sign_in_form(
+                    driver, timeout=20
+                )
+            username_input.clear()
+            username_input.send_keys(username)
+            password_input.clear()
+            password_input.send_keys(password)
+            WebDriverWait(driver, 90, poll_frequency=0.5).until(
+                lambda current_driver: sign_in_button.is_displayed() and sign_in_button.is_enabled()
+            )
+            sign_in_button.click()
+
+            try:
+                WebDriverWait(driver, 30).until(lambda current_driver: "/sign-in" not in current_driver.current_url)
+            except TimeoutException:
+                if is_blank_or_unusable_page(driver):
+                    raise RuntimeError("Blank page after sign-in attempt.")
+                log_and_print_func(
+                    "⚠️ Sign In did not redirect. Complete any Letterboxd security "
+                    "verification in Chrome; waiting up to 2 minutes."
+                )
+                WebDriverWait(driver, 120, poll_frequency=0.5).until(
+                    lambda current_driver: "/sign-in" not in current_driver.current_url
+                )
+
+            if "/sign-in" not in driver.current_url:
+                log_and_print_func("✅ Successfully signed in to Letterboxd.")
+                return driver
+
+        except Exception as e:
+            error_text = str(e)
+            session_lost = any(
+                marker in error_text.lower()
+                for marker in (
+                    "invalid session id",
+                    "not connected to devtools",
+                    "browser has closed the connection",
+                    "target window already closed",
+                )
+            )
+            try:
+                page_url = driver.current_url
+                page_title = driver.title
+                body_text = str(driver.execute_script("return document.body ? document.body.innerText : ''") or '')
+                no_js_marker = bool(driver.execute_script(
+                    "return document.documentElement && "
+                    "document.documentElement.classList.contains('no-js');"
+                ))
+                log_and_print_func(
+                    f"⚠️ Sign-in page state: url={page_url!r}, title={page_title!r}, "
+                    f"body_length={len(body_text)}, no_js_marker={no_js_marker}, "
+                    f"body_preview={body_text[:200]!r}"
+                )
+            except Exception as page_state_error:
+                if not session_lost:
+                    log_and_print_func(f"⚠️ Could not inspect sign-in page state: {page_state_error}")
+            log_and_print_func(f"⚠️ Sign-in attempt {attempt} failed: {error_text}")
+            if attempt < max_attempts:
+                retry_delay = min(60, 10 * attempt)
+                log_and_print_func(
+                    f"✅ Waiting {retry_delay} seconds before the next sign-in attempt."
+                )
+                time.sleep(retry_delay)
+                try:
+                    driver.quit()
+                except Exception:
+                    pass
+                driver = create_chrome_driver(log_and_print_func)
+                log_and_print_func("✅ Browser reset after failed sign-in; retrying.")
+                continue
+            raise e
+
+    raise RuntimeError("Unable to sign in to Letterboxd after multiple attempts.")
+
 
 def update_letterboxd_lists():
     # Load credentials
@@ -228,6 +613,21 @@ def update_letterboxd_lists():
         "4_Hours_or_Greater_pop_movies": "https://letterboxd.com/bigbadraj/list/the-top-5-most-popular-films-of-240-minutes/edit/",
     }
 
+    personal_lists = {
+        "Personal_sleepaway_camp_movies_ranked": "https://letterboxd.com/bigbadraj/list/sleepaway-camp-movies-ranked/edit/",
+        "Personal_2026_releases_ranked": "https://letterboxd.com/bigbadraj/list/2026-releases-ranked/edit/",
+        "Personal_2025_releases_ranked": "https://letterboxd.com/bigbadraj/list/2025-releases-ranked/edit/",
+        "Personal_friday_the_13th_movies_ranked": "https://letterboxd.com/bigbadraj/list/friday-the-13th-movies-ranked/edit/",
+        "Personal_halloween_movies_ranked": "https://letterboxd.com/bigbadraj/list/halloween-movies-ranked/edit/",
+        "Personal_v_h_s_movies_ranked": "https://letterboxd.com/bigbadraj/list/v-h-s-movies-ranked/edit/",
+        "Personal_mission_impossible_movies_ranked": "https://letterboxd.com/bigbadraj/list/mission-impossible-movies-ranked/edit/",
+        "Personal_scream_movies_ranked": "https://letterboxd.com/bigbadraj/list/scream-movies-ranked/edit/",
+        "Personal_2024_releases_ranked": "https://letterboxd.com/bigbadraj/list/2024-releases-ranked/edit/",
+        "Personal_saw_movies_ranked": "https://letterboxd.com/bigbadraj/list/saw-movies-ranked/edit/",
+        "Personal_nightmare_on_elm_street_movies_ranked": "https://letterboxd.com/bigbadraj/list/nightmare-on-elm-street-movies-ranked/edit/",
+        "Personal_hannibal_movies_ranked": "https://letterboxd.com/bigbadraj/list/hannibal-movies-ranked/edit/",
+    }
+
     # Dictionary of lists to update with specific descriptions
     lists_with_descriptions = {
         "film_titles": {
@@ -260,71 +660,13 @@ def update_letterboxd_lists():
         }
     }
 
-    def _detect_chrome_major_version():
-        try:
-            import winreg  # type: ignore
-            for hive in (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE):
-                for subkey in (
-                    r"Software\Google\Chrome\BLBeacon",
-                    r"Software\WOW6432Node\Google\Chrome\BLBeacon",
-                ):
-                    try:
-                        k = winreg.OpenKey(hive, subkey)
-                        v, _ = winreg.QueryValueEx(k, "version")
-                        if v:
-                            return int(str(v).split(".", 1)[0])
-                    except Exception:
-                        continue
-        except Exception:
-            pass
-        try:
-            import subprocess
-            out = subprocess.check_output(["chrome", "--version"], stderr=subprocess.STDOUT, text=True)
-            for token in out.split():
-                if token and token[0].isdigit() and "." in token:
-                    return int(token.split(".", 1)[0])
-        except Exception:
-            pass
-        return None
-
-    # Initialize the Chrome driver (undetected-chromedriver to reduce Cloudflare/captcha blocks)
     driver = None
-    options = uc.ChromeOptions()
-    options.page_load_strategy = 'eager'
-    options.add_argument("--window-size=1280,900")
-    options.add_argument("--start-maximized")
-    options.add_argument("--disable-blink-features=AutomationControlled")
-    options.add_argument("--disable-dev-shm-usage")
-    options.add_argument("--disable-gpu")
-    options.add_argument("--disable-extensions")
-    if CHROME_USER_DATA_DIR and os.path.isdir(CHROME_USER_DATA_DIR):
-        options.add_argument(f"--user-data-dir={CHROME_USER_DATA_DIR}")
-        if CHROME_PROFILE_DIR:
-            options.add_argument(f"--profile-directory={CHROME_PROFILE_DIR}")
-    chrome_major = _detect_chrome_major_version()
-    log_and_print(f"✅ Starting Chrome driver (detected major: {chrome_major or 'automatic'}).")
-    if chrome_major:
-        driver = uc.Chrome(options=options, use_subprocess=True, version_main=chrome_major)
-    else:
-        driver = uc.Chrome(options=options, use_subprocess=True)
-    driver.set_page_load_timeout(30)
-    log_and_print("✅ Chrome driver started.")
 
     try:
+        driver = create_chrome_driver(log_and_print)
         log_and_print("✅ Navigating to Letterboxd homepage.")
         try:
-            driver.get("https://letterboxd.com/sign-in/")
-            log_and_print("✅ Entering username and password.")
-            username_input = wait_for_visible_input(driver, "username")
-            password_input = wait_for_visible_input(driver, "password")
-            username_input.clear()
-            username_input.send_keys(username)
-            password_input.clear()
-            password_input.send_keys(password)
-            password_input.send_keys(Keys.RETURN)
-            WebDriverWait(driver, 30).until(
-                lambda current_driver: "/sign-in" not in current_driver.current_url
-            )
+            driver = login_to_letterboxd(driver, username, password, log_and_print)
         except NoSuchWindowException as e:
             log_and_print("❌ Browser window closed while checking sign-in; aborting updates.")
             raise e
@@ -337,24 +679,37 @@ def update_letterboxd_lists():
             has_error = False
 
             try:
-                # Navigate to the list edit page
-                driver.get(edit_url)
-                time.sleep(2)
-
-                # Step 1: Check if the CSV file exists before attempting to upload
+                # Check required files before opening the list in Chrome.
                 csv_file_name = f"{list_name}.csv"
                 csv_file_path = os.path.join(output_dir, csv_file_name)
+                matching_files = glob.glob(os.path.join(base_folder_path, f"stats_{list_name}*.txt"))
 
                 if not os.path.exists(csv_file_path):
                     log_and_print(f"❌ CSV file not found: {csv_file_name}")
-                    log_and_print(f"❌ Skipping list update for {list_name} - file does not exist")
+                    log_and_print(f"❌ Skipping list update for {list_name} - required file does not exist")
                     results.append({
                         'list_name': list_name,
                         'status': f'Failed to update: CSV file {csv_file_name} not found'
                     })
                     continue
 
-                # Step 2: Click the Import button
+                if not matching_files:
+                    log_and_print(f"❌ Stats text file not found for {list_name}")
+                    log_and_print(f"❌ Skipping list update for {list_name} - required file does not exist")
+                    results.append({
+                        'list_name': list_name,
+                        'status': f'Failed to update: stats text file for {list_name} not found'
+                    })
+                    continue
+
+                with open(matching_files[0], 'r', encoding='utf-8') as txt_file:
+                    file_contents = txt_file.read()
+
+                # Open the list only after all required files are available.
+                driver.get(edit_url)
+                time.sleep(2)
+
+                # Click the Import button
                 safe_click_import_button(driver, log_and_print)
 
                 # Step 3: Select the correct CSV file
@@ -380,39 +735,6 @@ def update_letterboxd_lists():
                 pyautogui.press('enter')  # Select the filtered file
 
                 time.sleep(2)  
-
-                # Step 3: Attempt to find and copy the associated txt file
-                file_found = False
-                attempts = 0
-                max_attempts = 3
-
-                while not file_found and attempts < max_attempts:
-                    # Use glob to find files that include the list_name
-                    matching_files = glob.glob(os.path.join(base_folder_path, f"stats_{list_name}*.txt"))
-
-                    if matching_files:
-                        # If it finds any matching files, read the first one (or handle as needed)
-                        with open(matching_files[0], 'r', encoding='utf-8') as txt_file:
-                            file_contents = txt_file.read()
-                        log_and_print(f"✅ Copied contents from {matching_files[0]}.")
-                        file_found = True
-                    else:
-                        log_and_print(f"No matching text files found for {list_name}. Attempting again.")
-                        # Simulate typing the text file name to find it again
-                        time.sleep(1)
-                        # Use Alt + N to focus on the filename box at the bottom of the file dialog
-                        pyautogui.hotkey('alt', 'n')
-                        time.sleep(0.5)
-                        pyautogui.typewrite(f"{list_name}*.txt", interval=0.1)  
-                        time.sleep(1)
-                        pyautogui.press('enter')
-
-                        time.sleep(1)  
-                        attempts += 1  
-
-                if not file_found:
-                    log_and_print(f"❌ Failed to find any matching text files for {list_name} after {max_attempts} attempts.")
-                    has_error = True  
 
                 wait_for_import_results(driver)
 
@@ -456,8 +778,13 @@ def update_letterboxd_lists():
                 # Step 8: Save the changes
                 time.sleep(1)
                 log_and_print("✅ Saving the changes.")
-                driver.find_element(By.ID, "list-edit-save").click()
-                time.sleep(7)  
+                save_button = find_save_button(driver)
+                driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", save_button)
+                try:
+                    save_button.click()
+                except Exception:
+                    driver.execute_script("arguments[0].click();", save_button)
+                time.sleep(7)
 
                 # Log success or failure based on the error flag
                 if has_error:
@@ -480,6 +807,39 @@ def update_letterboxd_lists():
                 })
                 continue  
 
+        # Handle corrected personal lists when their CSVs exist.
+        for list_name, edit_url in personal_lists.items():
+            csv_file_name = f"{list_name}.csv"
+            csv_file_path = os.path.join(output_dir, csv_file_name)
+            if not os.path.exists(csv_file_path):
+                log_and_print(f"ℹ️ Skipping {list_name}: {csv_file_name} does not exist.")
+                results.append({
+                    'list_name': list_name,
+                    'status': f'Skipped: CSV file {csv_file_name} not found'
+                })
+                continue
+
+            log_and_print(f"✅ Updating personal list: {list_name}")
+            try:
+                import_simple_list(
+                    driver,
+                    edit_url,
+                    csv_file_path,
+                    csv_file_name,
+                    log_and_print,
+                )
+                results.append({
+                    'list_name': list_name,
+                    'status': 'Successfully updated'
+                })
+                log_and_print(f"✅ Successfully updated personal list: {list_name}")
+            except Exception as error:
+                log_and_print(f"❌ Failed to update personal list: {list_name}. Error: {error}")
+                results.append({
+                    'list_name': list_name,
+                    'status': f'Failed to update: {error}'
+                })
+
         # Handle lists with specific descriptions
         for list_name, details in lists_with_descriptions.items():
             log_and_print(f"✅ Updating list: {list_name}")
@@ -488,11 +848,7 @@ def update_letterboxd_lists():
             has_error = False
 
             try:
-                # Navigate to the list edit page
-                driver.get(details["url"])
-                time.sleep(2) 
-
-                # Step 1: Check if the CSV file exists before attempting to upload
+                # Check the CSV before opening the list in Chrome.
                 csv_file_name = f"{list_name}.csv"
                 csv_file_path = os.path.join(output_dir, csv_file_name)
 
@@ -505,7 +861,11 @@ def update_letterboxd_lists():
                     })
                     continue
 
-                # Step 2: Click the Import button
+                # Open the list only after the required file is available.
+                driver.get(details["url"])
+                time.sleep(2)
+
+                # Click the Import button
                 safe_click_import_button(driver, log_and_print)  
 
                 # Step 3: Select the correct CSV file
@@ -574,8 +934,13 @@ def update_letterboxd_lists():
                 # Step 8: Save the changes
                 time.sleep(1)
                 log_and_print("✅ Saving the changes.")
-                driver.find_element(By.ID, "list-edit-save").click()
-                time.sleep(7)  
+                save_button = find_save_button(driver)
+                driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", save_button)
+                try:
+                    save_button.click()
+                except Exception:
+                    driver.execute_script("arguments[0].click();", save_button)
+                time.sleep(7)
 
                 # Log success or failure based on the error flag
                 if has_error:
@@ -603,25 +968,45 @@ def update_letterboxd_lists():
             log_and_print(f"✅ Updating special list: {list_name}")
 
             try:
-                # Navigate to the list edit page
-                driver.get(details["url"])
-                time.sleep(2)  
+                # Check every required CSV and the stats text before opening the list.
+                csv_file_names = [
+                    details["csv_file_name_1"],
+                    details["csv_file_name_2"],
+                    details["csv_file_name_3"],
+                ]
+                missing_csv_files = [
+                    file_name for file_name in csv_file_names
+                    if not os.path.exists(os.path.join(output_dir, file_name))
+                ]
+                matching_files = glob.glob(os.path.join(base_folder_path, f"{list_name[:15]}*.txt"))
 
-                # Step 1: Check if the first CSV file exists before attempting to upload
-                log_and_print("✅ Checking first CSV file.")
-                csv_file_name = details["csv_file_name_1"]
-                csv_file_path = os.path.join(output_dir, csv_file_name)
-
-                if not os.path.exists(csv_file_path):
-                    log_and_print(f"❌ CSV file not found: {csv_file_name}")
-                    log_and_print(f"❌ Skipping special list update for {list_name} - file does not exist")
+                if missing_csv_files:
+                    log_and_print(f"❌ CSV file(s) not found: {', '.join(missing_csv_files)}")
+                    log_and_print(f"❌ Skipping special list update for {list_name} - required file does not exist")
                     results.append({
                         'list_name': list_name,
-                        'status': f'Failed to update: CSV file {csv_file_name} not found'
+                        'status': f'Failed to update: CSV file(s) {", ".join(missing_csv_files)} not found'
                     })
                     continue
 
-                # Step 2: Click the Import button
+                if not matching_files:
+                    log_and_print(f"❌ Stats text file not found for {list_name}")
+                    log_and_print(f"❌ Skipping special list update for {list_name} - required file does not exist")
+                    results.append({
+                        'list_name': list_name,
+                        'status': f'Failed to update: stats text file for {list_name} not found'
+                    })
+                    continue
+
+                with open(matching_files[0], 'r', encoding='utf-8') as txt_file:
+                    file_contents = txt_file.read()
+
+                # Open the list only after all required files are available.
+                csv_file_name = details["csv_file_name_1"]
+                driver.get(details["url"])
+                time.sleep(2)
+
+                # Click the Import button
                 safe_click_import_button(driver, log_and_print)  
 
                 # Step 3: Import the first CSV file
@@ -649,33 +1034,6 @@ def update_letterboxd_lists():
                 pyautogui.press('enter')  # Select the filtered file
 
                 wait_for_import_results(driver)
-
-                # Attempt to find and copy the associated txt file
-                file_found = False
-                attempts = 0
-                max_attempts = 3  
-
-                while not file_found and attempts < max_attempts:
-                    # Use glob to find files that start with the first 15 characters of list_name and end with .txt
-                    matching_files = glob.glob(os.path.join(base_folder_path, f"{list_name[:15]}*.txt"))
-
-                    if matching_files:
-                        # If it finds matching files, read the first one (or handle as needed)
-                        with open(matching_files[0], 'r', encoding='utf-8') as txt_file:
-                            file_contents = txt_file.read()
-                        log_and_print(f"✅ Copied contents from {matching_files[0]}.")
-                        file_found = True
-                    else:
-                        log_and_print(f"No matching text files found for {list_name}. Attempting again.")
-                        # Use Alt + N to focus on the filename box at the bottom of the file dialog
-                        pyautogui.hotkey('alt', 'n')
-                        time.sleep(0.5)
-                        pyautogui.typewrite(f"{list_name[:15]}*.txt", interval=0.1) 
-                        time.sleep(1) 
-                        pyautogui.press('enter')  
-
-                        time.sleep(1)  
-                        attempts += 1  
 
                 # Step 3: Click the "Hide Successful Matches" button
                 try:
@@ -715,8 +1073,13 @@ def update_letterboxd_lists():
                         log_and_print(f"❌ Failed to add text using send_keys: {str(e)}")
 
                 # Step 7: Save the changes for the first import
-                log_and_print("✅ Saving the changes for the first import.");
-                driver.find_element(By.ID, "list-edit-save").click()
+                log_and_print("✅ Saving the changes for the first import.")
+                save_button = find_save_button(driver)
+                driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", save_button)
+                try:
+                    save_button.click()
+                except Exception:
+                    driver.execute_script("arguments[0].click();", save_button)
                 wait_for_list_editor(driver)
 
                 # Step 8: Check if the second CSV file exists before attempting to upload
@@ -782,7 +1145,12 @@ def update_letterboxd_lists():
                 # Step 12: Save the changes for the second import
                 time.sleep(1)
                 log_and_print("✅ Saving the changes for the second import.")
-                driver.find_element(By.ID, "list-edit-save").click()
+                save_button = find_save_button(driver)
+                driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", save_button)
+                try:
+                    save_button.click()
+                except Exception:
+                    driver.execute_script("arguments[0].click();", save_button)
                 wait_for_list_editor(driver)
 
                 # Step 13: Check if the third CSV file exists before attempting to upload
@@ -848,7 +1216,12 @@ def update_letterboxd_lists():
                 # Step 18: Save the changes for the third import
                 time.sleep(1)
                 log_and_print("✅ Saving the changes for the third import.")
-                driver.find_element(By.ID, "list-edit-save").click()
+                save_button = find_save_button(driver)
+                driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", save_button)
+                try:
+                    save_button.click()
+                except Exception:
+                    driver.execute_script("arguments[0].click();", save_button)
                 wait_for_list_editor(driver)
 
                 log_and_print(f"✅ Successfully updated special list: {list_name}")

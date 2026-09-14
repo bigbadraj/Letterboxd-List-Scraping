@@ -231,6 +231,8 @@ page_number = 1  # Start at page 1
 
 max_movies = 250
 MIN_RATING_COUNT = 1000
+EXPECTED_LISTING_CONTAINERS = 72
+LISTING_CONTAINER_SELECTOR = 'li.posteritem'
 
 class ProgressTracker:
     def __init__(self, total_films):
@@ -284,7 +286,14 @@ def is_driver_failure(error_message):
     lowered = error_message.lower()
     return any(
         marker in lowered
-        for marker in ('invalid session id', 'connection refused', 'connection aborted', 'connection reset')
+        for marker in (
+            'invalid session id',
+            'connection refused',
+            'connection aborted',
+            'connection reset',
+            'max retries exceeded',
+            'target machine actively refused',
+        )
     )
 
 
@@ -331,43 +340,69 @@ progress_tracker = ProgressTracker(max_movies)
 print_to_csv(f"\n{' Starting Film Scraping ':=^100}")
 
 def load_listing_page_and_extract_ordered_urls(listing_page_num):
-    """Load listing page N and return every /film/ URL on that page in DOM order (full page)."""
+    """Load listing page N only after all 72 expected film containers are present."""
     url = f'{base_url}page/{listing_page_num}/'
     print_to_csv(f'Collecting URLs from page {listing_page_num}')
     page_retries = 20
     for retry in range(page_retries):
         try:
             driver.get(url)
-            page_source = ''
-            deadline = time.time() + 20
-            while time.time() < deadline:
-                page_source = driver.page_source
-                if 'posteritem' in page_source:
-                    break
-                time.sleep(1)
-            if 'posteritem' not in page_source:
-                raise RuntimeError('Listing page did not contain posteritem markup')
-            break
+            WebDriverWait(driver, 20).until(
+                lambda current_driver: len(
+                    current_driver.find_elements(By.CSS_SELECTOR, LISTING_CONTAINER_SELECTOR)
+                ) >= EXPECTED_LISTING_CONTAINERS
+            )
+            container_count = len(driver.find_elements(By.CSS_SELECTOR, LISTING_CONTAINER_SELECTOR))
+            print_to_csv(
+                f'Found {container_count} film containers on page {listing_page_num} '
+                f'(required: {EXPECTED_LISTING_CONTAINERS})'
+            )
+
+            hrefs = driver.execute_script(
+                """
+                return Array.from(document.querySelectorAll(arguments[0]))
+                    .slice(0, arguments[1])
+                    .map(container => {
+                        const link = container.querySelector('a[href*="/film/"]');
+                        return link ? link.href : null;
+                    });
+                """,
+                LISTING_CONTAINER_SELECTOR,
+                EXPECTED_LISTING_CONTAINERS,
+            )
+            page_urls = []
+            seen_urls = set()
+            for href in hrefs:
+                if not href:
+                    continue
+                film_url = urljoin(url, href)
+                normalized_url = normalize_listing_film_url(film_url)
+                if normalized_url and normalized_url not in seen_urls:
+                    seen_urls.add(normalized_url)
+                    page_urls.append(film_url)
+            if len(page_urls) != EXPECTED_LISTING_CONTAINERS:
+                raise RuntimeError(
+                    f'Extracted {len(page_urls)} film URLs from {container_count} containers; '
+                    f'expected {EXPECTED_LISTING_CONTAINERS}'
+                )
+            print_to_csv(f"Collected {len(page_urls)} film URLs from page {listing_page_num}")
+            return page_urls
         except Exception as e:
             error_message = f"{type(e).__name__}: {e}"
+            observed_container_count = container_count if 'container_count' in locals() else 'unknown'
             if retry == page_retries - 1:
-                print_to_csv(f"❌ Failed to load page after {page_retries} attempts: {error_message}")
+                print_to_csv(
+                    f"❌ Failed to load page after {page_retries} attempts: {error_message} "
+                    f"(found {observed_container_count}/{EXPECTED_LISTING_CONTAINERS} containers)"
+                )
                 raise Exception(f"Failed to load page after {page_retries} attempts: {error_message}") from e
-            print_to_csv(f"Retry {retry + 1}/{page_retries} loading page {listing_page_num}: {error_message}")
+            print_to_csv(
+                f"Retry {retry + 1}/{page_retries} loading page {listing_page_num}: {error_message} "
+                f"(found {observed_container_count}/{EXPECTED_LISTING_CONTAINERS} containers)"
+            )
             if is_driver_failure(error_message):
                 restart_webdriver()
             time.sleep(2)
-
-    page_source = driver.page_source
-    page_urls = []
-    seen_urls = set()
-    for href in re.findall(r'<a\b[^>]*href=["\']([^"\']*?/film/[^"\']*)["\']', page_source, re.IGNORECASE):
-        film_url = urljoin(url, href)
-        if film_url not in seen_urls:
-            seen_urls.add(film_url)
-            page_urls.append(film_url)
-    print_to_csv(f"Collected {len(page_urls)} film URLs from page {listing_page_num}")
-    return page_urls
 
 
 def extend_film_urls_with_page(film_urls, page_urls, max_movies_limit):
