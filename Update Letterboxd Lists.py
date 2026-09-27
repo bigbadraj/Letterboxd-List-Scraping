@@ -810,6 +810,9 @@ def update_letterboxd_lists():
         "Personal_marvel_movies_ranked": "https://letterboxd.com/bigbadraj/list/marvel-movies-ranked/edit/",
         "Personal_superhero_movies_ranked_1": "https://letterboxd.com/bigbadraj/list/superhero-movies-ranked-1/edit/",
         "Personal_dc_movies_ranked_1": "https://letterboxd.com/bigbadraj/list/dc-movies-ranked-1/edit/",
+        "Personal_a24_ranked_1": "https://letterboxd.com/bigbadraj/list/a24-ranked-1/edit/",
+        "Personal_pixar_ranked": "https://letterboxd.com/bigbadraj/list/pixar-ranked/edit/",
+        "Personal_best_picture_winners_ranked": "https://letterboxd.com/bigbadraj/list/best-picture-winners-ranked/edit/"
     }
 
     # Dictionary of lists to update with specific descriptions

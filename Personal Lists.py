@@ -30,7 +30,10 @@ LISTS_TO_COMPARE = (
     "https://letterboxd.com/bigbadraj/list/hannibal-movies-ranked/",
     "https://letterboxd.com/bigbadraj/list/marvel-movies-ranked/",
     "https://letterboxd.com/bigbadraj/list/superhero-movies-ranked-1/",
-    "https://letterboxd.com/bigbadraj/list/dc-movies-ranked-1/"
+    "https://letterboxd.com/bigbadraj/list/dc-movies-ranked-1/",
+    "https://letterboxd.com/bigbadraj/list/a24-ranked-1/",
+    "https://letterboxd.com/bigbadraj/list/pixar-ranked/",
+    "https://letterboxd.com/bigbadraj/list/best-picture-winners-ranked/"
 )
 FETCH_WORKERS = 8
 
