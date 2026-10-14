@@ -19,6 +19,7 @@ from datetime import datetime
 import logging
 import traceback
 from credentials_loader import load_credentials
+from urllib.parse import urlparse
 
 # Explicit driver.quit() handles shutdown; suppress duplicate destructor cleanup.
 try:
@@ -267,11 +268,81 @@ def update_import_description(driver, description, log_and_print_func):
         return False
 
 
-def wait_for_list_editor(driver, timeout=30):
-    """Wait until the list editor is ready for another action."""
-    WebDriverWait(driver, timeout, poll_frequency=0.5).until(
-        lambda current_driver: _has_import_button(current_driver)
-    )
+def _letterboxd_main_stylesheet_is_ready(driver):
+    """Return whether Letterboxd's main stylesheet has loaded on a complete document."""
+    try:
+        return bool(driver.execute_script(
+            """
+            return document.readyState === 'complete'
+                && Array.from(document.querySelectorAll('link[rel~="stylesheet"]'))
+                    .some(link => {
+                        try {
+                            const url = new URL(link.href);
+                            return url.hostname === 's.ltrbxd.com'
+                                && /\\/static\\/css\\/main-[^/]+\\.css$/.test(url.pathname)
+                                && !!link.sheet;
+                        } catch (_) {
+                            return false;
+                        }
+                    });
+            """
+        ))
+    except Exception as error:
+        if any(
+            marker in str(error).lower()
+            for marker in ("connection", "protocolerror", "timed out", "timeout", "reset")
+        ):
+            return False
+        raise
+
+
+def wait_for_list_editor(driver, timeout=45):
+    """Wait until the styled list editor is ready for another action."""
+    def editor_is_ready(current_driver):
+        return (
+            _letterboxd_main_stylesheet_is_ready(current_driver)
+            and _has_import_button(current_driver)
+        )
+
+    WebDriverWait(driver, timeout, poll_frequency=0.5).until(editor_is_ready)
+
+
+def navigate_to_list_editor(driver, edit_url, log_and_print_func, timeout=45):
+    """Wait for the styled editor, including when navigation reports a transient error."""
+    requested_path = urlparse(edit_url).path.rstrip("/").lower()
+    navigation_error = None
+    try:
+        driver.get(edit_url)
+    except Exception as error:
+        navigation_error = error
+        log_and_print_func(f"⚠️ List navigation reported an error; waiting for the editor: {error}")
+
+    try:
+        def requested_editor_is_ready(current_driver):
+            try:
+                current_path = urlparse(current_driver.current_url).path.rstrip("/").lower()
+                return (
+                    current_path == requested_path
+                    and _letterboxd_main_stylesheet_is_ready(current_driver)
+                    and _has_import_button(current_driver)
+                )
+            except Exception as error:
+                if any(
+                    marker in str(error).lower()
+                    for marker in ("connection", "protocolerror", "timed out", "timeout", "reset")
+                ):
+                    return False
+                raise
+
+        WebDriverWait(driver, timeout, poll_frequency=0.5).until(requested_editor_is_ready)
+    except Exception as wait_error:
+        if navigation_error is not None:
+            raise navigation_error from wait_error
+        raise
+
+    if navigation_error is not None:
+        log_and_print_func("✅ List editor loaded after the navigation error; continuing without reopening it.")
+    return driver
 
 
 def _has_import_button(driver):
@@ -297,25 +368,103 @@ def wait_for_sign_in_form(driver, timeout=30):
     """Wait for the visible Letterboxd sign-in fields and control to render."""
     def find_form(current_driver):
         try:
+            forms = current_driver.find_elements(By.TAG_NAME, "form")
+            for form in forms:
+                visible_inputs = [
+                    element for element in form.find_elements(By.CSS_SELECTOR, "input")
+                    if element.is_displayed() and element.is_enabled()
+                ]
+                password_input = next(
+                    (
+                        element for element in visible_inputs
+                        if element.get_attribute("type") == "password"
+                        or element.get_attribute("name") == "password"
+                        or element.get_attribute("autocomplete") == "current-password"
+                    ),
+                    None,
+                )
+                if not password_input:
+                    continue
+
+                username_input = next(
+                    (
+                        element for element in visible_inputs
+                        if element is not password_input
+                        and (
+                            element.get_attribute("name") == "username"
+                            or element.get_attribute("autocomplete") == "username"
+                            or element.get_attribute("type") == "email"
+                            or element.get_attribute("id") == "field-username"
+                        )
+                    ),
+                    None,
+                )
+                if not username_input:
+                    username_input = next(
+                        (
+                            element for element in visible_inputs
+                            if element is not password_input
+                            and element.get_attribute("type") in ("text", "email")
+                        ),
+                        None,
+                    )
+
+                sign_in_button = next(
+                    (
+                        element for element in form.find_elements(
+                            By.CSS_SELECTOR, "button[type='submit'], input[type='submit']"
+                        )
+                        if element.is_displayed()
+                    ),
+                    None,
+                )
+                if not sign_in_button:
+                    sign_in_button = next(
+                        (
+                            element for element in form.find_elements(By.TAG_NAME, "button")
+                            if element.is_displayed()
+                            and "sign in" in (
+                                element.text or element.get_attribute("aria-label") or ""
+                            ).lower()
+                        ),
+                        None,
+                    )
+                if username_input and password_input and sign_in_button:
+                    return username_input, password_input, sign_in_button
+
             username_input = next(
-                (element for element in current_driver.find_elements(By.NAME, "username")
-                 if element.is_displayed() and element.is_enabled()),
+                (
+                    element for element in current_driver.find_elements(
+                        By.CSS_SELECTOR,
+                        "input[name='username'], input[autocomplete='username'], "
+                        "input#field-username, input[type='email']",
+                    )
+                    if element.is_displayed() and element.is_enabled()
+                ),
                 None,
             )
             password_input = next(
-                (element for element in current_driver.find_elements(By.NAME, "password")
-                 if element.is_displayed() and element.is_enabled()),
+                (
+                    element for element in current_driver.find_elements(
+                        By.CSS_SELECTOR,
+                        "input[name='password'], input[autocomplete='current-password'], "
+                        "input#field-password, input[type='password']",
+                    )
+                    if element.is_displayed() and element.is_enabled()
+                ),
                 None,
             )
             sign_in_button = next(
-                (element for element in current_driver.find_elements(
-                    By.XPATH,
-                    "//button[@type='submit' or contains(translate(normalize-space(.), "
-                    "'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'sign in') "
-                    "or contains(translate(@aria-label, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', "
-                    "'abcdefghijklmnopqrstuvwxyz'), 'sign in')] | //input[@type='submit']",
-                )
-                 if element.is_displayed()),
+                (
+                    element for element in current_driver.find_elements(
+                        By.XPATH,
+                        "//button[@type='submit' or contains(translate(normalize-space(.), "
+                        "'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'sign in') "
+                        "or contains(translate(@aria-label, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', "
+                        "'abcdefghijklmnopqrstuvwxyz'), 'sign in')] | //input[@type='submit']",
+                    )
+                    if element.is_displayed()
+                ),
                 None,
             )
             if username_input and password_input and sign_in_button:
@@ -361,8 +510,7 @@ def wait_for_visible_sign_in_link(driver, timeout=15):
 
 def import_simple_list(driver, edit_url, csv_path, csv_file_name, log_and_print_func):
     """Replace a list from a CSV without changing its description."""
-    driver.get(edit_url)
-    time.sleep(2)
+    driver = navigate_to_list_editor(driver, edit_url, log_and_print_func)
     driver = safe_click_import_button(driver, log_and_print_func)
 
     log_and_print_func(f"✅ Selecting CSV file: {csv_file_name}")
@@ -424,8 +572,7 @@ def import_csv_into_list(
 ):
     """Run the regular list-import workflow for one CSV chunk."""
     if open_editor:
-        driver.get(edit_url)
-        time.sleep(2)
+        driver = navigate_to_list_editor(driver, edit_url, log_and_print_func)
     else:
         wait_for_list_editor(driver)
     safe_click_import_button(driver, log_and_print_func)
@@ -476,8 +623,7 @@ def import_csv_into_list(
 
     time.sleep(1)
     click_add_films_button(driver, log_and_print_func)
-    driver.get(edit_url)
-    time.sleep(5)
+    driver = navigate_to_list_editor(driver, edit_url, log_and_print_func)
 
     if description is not None:
         update_import_description(driver, description, log_and_print_func)
@@ -623,20 +769,30 @@ def login_to_letterboxd(driver, username, password, log_and_print_func):
     for attempt in range(1, max_attempts + 1):
         try:
             log_and_print_func(f"✅ Attempting Letterboxd sign-in (attempt {attempt}/{max_attempts}).")
-            driver.get("https://letterboxd.com/sign-in/")
+            navigation_error = None
+            try:
+                driver.get("https://letterboxd.com/sign-in/")
+            except Exception as error:
+                navigation_error = error
+                log_and_print_func(f"⚠️ Sign-in navigation reported an error; waiting for the form: {error}")
             log_and_print_func("✅ Loading Letterboxd sign-in page directly.")
-            time.sleep(3)
             if is_security_check_page(driver):
                 log_and_print_func(
                     "⚠️ Letterboxd security verification is active. Complete it in Chrome; "
                     "waiting up to 2 minutes for the sign-in form."
                 )
+            form_timeout = 120
+            try:
                 username_input, password_input, sign_in_button = wait_for_sign_in_form(
-                    driver, timeout=25
+                    driver, timeout=form_timeout
                 )
-            else:
-                username_input, password_input, sign_in_button = wait_for_sign_in_form(
-                    driver, timeout=20
+            except Exception as wait_error:
+                if navigation_error is not None:
+                    raise navigation_error from wait_error
+                raise
+            if navigation_error is not None:
+                log_and_print_func(
+                    "✅ Sign-in form loaded after the navigation error; continuing without reopening it."
                 )
             username_input.clear()
             username_input.send_keys(username)
@@ -691,9 +847,30 @@ def login_to_letterboxd(driver, username, password, log_and_print_func):
                     f"body_length={len(body_text)}, no_js_marker={no_js_marker}, "
                     f"body_preview={body_text[:200]!r}"
                 )
+                control_summary = driver.execute_script(
+                    """
+                    return {
+                        forms: Array.from(document.forms).map(form => ({
+                            inputs: Array.from(form.querySelectorAll('input')).map(input => ({
+                                type: input.type,
+                                name: input.name,
+                                id: input.id,
+                                autocomplete: input.autocomplete,
+                                visible: !!(input.getClientRects().length)
+                            })),
+                            buttons: Array.from(form.querySelectorAll('button, input[type="submit"]')).map(button => ({
+                                type: button.type,
+                                text: (button.innerText || button.value || button.getAttribute('aria-label') || '').trim(),
+                                visible: !!(button.getClientRects().length)
+                            }))
+                        }))
+                    };
+                    """
+                )
+                log_and_print_func(f"⚠️ Sign-in form controls: {control_summary!r}")
             except Exception as page_state_error:
-                if not session_lost:
-                    log_and_print_func(f"⚠️ Could not inspect sign-in page state: {page_state_error}")
+                session_lost = True
+                log_and_print_func(f"⚠️ Could not inspect sign-in page state: {page_state_error}")
             log_and_print_func(f"⚠️ Sign-in attempt {attempt} failed: {error_text}")
             if attempt < max_attempts:
                 retry_delay = min(60, 10 * attempt)
@@ -701,12 +878,13 @@ def login_to_letterboxd(driver, username, password, log_and_print_func):
                     f"✅ Waiting {retry_delay} seconds before the next sign-in attempt."
                 )
                 time.sleep(retry_delay)
-                try:
-                    driver.quit()
-                except Exception:
-                    pass
-                driver = create_chrome_driver(log_and_print_func)
-                log_and_print_func("✅ Browser reset after failed sign-in; retrying.")
+                if session_lost:
+                    try:
+                        driver.quit()
+                    except Exception:
+                        pass
+                    driver = create_chrome_driver(log_and_print_func)
+                    log_and_print_func("✅ Browser reset after lost session; retrying.")
                 continue
             raise e
 
@@ -893,8 +1071,7 @@ def update_letterboxd_lists():
                     file_contents = txt_file.read()
 
                 # Open the list only after all required files are available.
-                driver.get(edit_url)
-                time.sleep(2)
+                driver = navigate_to_list_editor(driver, edit_url, log_and_print)
 
                 # Click the Import button
                 driver = safe_click_import_button(driver, log_and_print)
@@ -1054,7 +1231,7 @@ def update_letterboxd_lists():
                     continue
 
                 # Open the list only after the required file is available.
-                driver.get(details["url"])
+                driver = navigate_to_list_editor(driver, details["url"], log_and_print)
                 time.sleep(2)
 
                 # Click the Import button
@@ -1218,7 +1395,7 @@ def update_letterboxd_lists():
 
                 # Open the list only after all required files are available.
                 csv_file_name = details["csv_file_name_1"]
-                driver.get(details["url"])
+                driver = navigate_to_list_editor(driver, details["url"], log_and_print)
                 time.sleep(2)
 
                 # Click the Import button

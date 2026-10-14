@@ -100,14 +100,35 @@ def collect_ordered_paths(session: requests.Session, list_url: str) -> List[str]
         soup = BeautifulSoup(response.content, "html.parser")
         film_list = soup.find("ul", class_="poster-list")
         if not film_list:
-            break
+            page_text = soup.get_text(" ", strip=True).lower()
+            if any(
+                marker in page_text
+                for marker in (
+                    "just a moment",
+                    "checking your browser",
+                    "verify you are human",
+                    "security check",
+                    "enable javascript and cookies",
+                )
+            ):
+                raise RuntimeError(
+                    f"Letterboxd returned a security-check page for {list_url} page {page}; "
+                    "this requests-based scraper cannot complete browser verification."
+                )
+            raise RuntimeError(
+                f"Letterboxd response for {list_url} page {page} did not contain a poster list; "
+                "refusing to treat the response as an empty list."
+            )
 
         page_paths = [
             path for item in film_list.find_all("li", class_="posteritem")
             if (path := film_path_from_item(item))
         ]
         if not page_paths:
-            break
+            raise RuntimeError(
+                f"Letterboxd poster list for {list_url} page {page} contained no film URLs; "
+                "refusing to return incomplete results."
+            )
         film_paths.extend(page_paths)
         if not soup.find("a", class_="next"):
             break

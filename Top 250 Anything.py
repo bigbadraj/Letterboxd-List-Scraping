@@ -8,7 +8,7 @@ import pandas as pd
 import re
 import os
 import platform
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 from tqdm import tqdm
 import csv
 
@@ -340,36 +340,102 @@ progress_tracker = ProgressTracker(max_movies)
 print_to_csv(f"\n{' Starting Film Scraping ':=^100}")
 
 def load_listing_page_and_extract_ordered_urls(listing_page_num):
-    """Load listing page N only after all 72 expected film containers are present."""
+    """Load listing page N only after all expected film URLs are available."""
     url = f'{base_url}page/{listing_page_num}/'
-    print_to_csv(f'Collecting URLs from page {listing_page_num}')
+    requested_path = urlparse(url).path.rstrip('/').lower()
     page_retries = 20
     for retry in range(page_retries):
+        attempt_state = {
+            'container_count': None,
+            'linked_count': None,
+            'unique_url_count': None,
+        }
         try:
-            driver.get(url)
-            WebDriverWait(driver, 20).until(
-                lambda current_driver: len(
-                    current_driver.find_elements(By.CSS_SELECTOR, LISTING_CONTAINER_SELECTOR)
-                ) >= EXPECTED_LISTING_CONTAINERS
-            )
-            container_count = len(driver.find_elements(By.CSS_SELECTOR, LISTING_CONTAINER_SELECTOR))
-            print_to_csv(
-                f'Found {container_count} film containers on page {listing_page_num} '
-                f'(required: {EXPECTED_LISTING_CONTAINERS})'
-            )
+            navigation_error = None
+            try:
+                driver.get(url)
+            except Exception as error:
+                navigation_error = error
+                print_to_csv(
+                    f"Navigation raised {type(error).__name__} on listing page {listing_page_num}; "
+                    "waiting for that page to finish loading before retrying."
+                )
 
-            hrefs = driver.execute_script(
-                """
-                return Array.from(document.querySelectorAll(arguments[0]))
-                    .slice(0, arguments[1])
-                    .map(container => {
-                        const link = container.querySelector('a[href*="/film/"]');
-                        return link ? link.href : null;
-                    });
-                """,
-                LISTING_CONTAINER_SELECTOR,
-                EXPECTED_LISTING_CONTAINERS,
-            )
+            def get_complete_listing_hrefs(current_driver):
+                try:
+                    current_path = urlparse(current_driver.current_url).path.rstrip('/').lower()
+                except Exception as error:
+                    if is_driver_failure(f"{type(error).__name__}: {error}"):
+                        return False
+                    raise
+                if current_path != requested_path:
+                    return False
+
+                listing = current_driver.execute_script(
+                    """
+                    const cssReady = document.readyState === 'complete'
+                        && Array.from(document.querySelectorAll('link[rel~="stylesheet"]'))
+                            .some(link => {
+                                try {
+                                    const url = new URL(link.href);
+                                    return url.hostname === 's.ltrbxd.com'
+                                        && /\\/static\\/css\\/main-[^/]+\\.css$/.test(url.pathname)
+                                        && !!link.sheet;
+                                } catch (_) {
+                                    return false;
+                                }
+                            });
+                    const containers = Array.from(document.querySelectorAll(arguments[0]));
+                    const hrefs = containers
+                        .slice(0, arguments[1])
+                        .map(container => {
+                            const link = container.querySelector('a[href*="/film/"]');
+                            return link ? link.href : null;
+                        });
+                    return {cssReady, containerCount: containers.length, hrefs};
+                    """,
+                    LISTING_CONTAINER_SELECTOR,
+                    EXPECTED_LISTING_CONTAINERS,
+                )
+                attempt_state['container_count'] = listing['containerCount']
+                if not listing['cssReady'] or listing['containerCount'] < EXPECTED_LISTING_CONTAINERS:
+                    return False
+
+                hrefs = listing['hrefs']
+                linked_hrefs = [href for href in hrefs if href]
+                normalized_urls = {
+                    normalize_listing_film_url(href)
+                    for href in linked_hrefs
+                    if normalize_listing_film_url(href)
+                }
+                attempt_state['linked_count'] = len(linked_hrefs)
+                attempt_state['unique_url_count'] = len(normalized_urls)
+                if (
+                    len(hrefs) == EXPECTED_LISTING_CONTAINERS
+                    and len(linked_hrefs) == EXPECTED_LISTING_CONTAINERS
+                    and len(normalized_urls) == EXPECTED_LISTING_CONTAINERS
+                ):
+                    return hrefs
+                return False
+
+            try:
+                readiness_timeout = 45
+                hrefs = WebDriverWait(driver, readiness_timeout).until(get_complete_listing_hrefs)
+            except Exception as wait_error:
+                if navigation_error is not None:
+                    raise navigation_error from wait_error
+                raise
+            if navigation_error is not None:
+                print_to_csv(
+                    f"Listing page {listing_page_num} finished loading after the navigation error; "
+                    "continuing without reopening it."
+                )
+            container_count = attempt_state['container_count']
+            # print_to_csv(
+            #     f'Found {container_count} film containers on page {listing_page_num} '
+            #     f'(required: {EXPECTED_LISTING_CONTAINERS})'
+            # )
+
             page_urls = []
             seen_urls = set()
             for href in hrefs:
@@ -389,16 +455,29 @@ def load_listing_page_and_extract_ordered_urls(listing_page_num):
             return page_urls
         except Exception as e:
             error_message = f"{type(e).__name__}: {e}"
-            observed_container_count = container_count if 'container_count' in locals() else 'unknown'
+            observed_container_count = attempt_state['container_count']
+            observed_link_count = attempt_state['linked_count']
+            observed_unique_url_count = attempt_state['unique_url_count']
+            container_count_display = (
+                observed_container_count if observed_container_count is not None else 'unknown'
+            )
+            link_count_display = observed_link_count if observed_link_count is not None else 'unknown'
+            unique_url_count_display = (
+                observed_unique_url_count if observed_unique_url_count is not None else 'unknown'
+            )
             if retry == page_retries - 1:
                 print_to_csv(
                     f"❌ Failed to load page after {page_retries} attempts: {error_message} "
-                    f"(found {observed_container_count}/{EXPECTED_LISTING_CONTAINERS} containers)"
+                    f"(found {container_count_display}/{EXPECTED_LISTING_CONTAINERS} containers, "
+                    f"{link_count_display}/{EXPECTED_LISTING_CONTAINERS} film links, "
+                    f"{unique_url_count_display}/{EXPECTED_LISTING_CONTAINERS} unique URLs)"
                 )
                 raise Exception(f"Failed to load page after {page_retries} attempts: {error_message}") from e
             print_to_csv(
                 f"Retry {retry + 1}/{page_retries} loading page {listing_page_num}: {error_message} "
-                f"(found {observed_container_count}/{EXPECTED_LISTING_CONTAINERS} containers)"
+                f"(found {container_count_display}/{EXPECTED_LISTING_CONTAINERS} containers, "
+                f"{link_count_display}/{EXPECTED_LISTING_CONTAINERS} film links, "
+                f"{unique_url_count_display}/{EXPECTED_LISTING_CONTAINERS} unique URLs)"
             )
             if is_driver_failure(error_message):
                 restart_webdriver()
@@ -462,7 +541,7 @@ while len(film_urls) < max_movies:
                 )
 
     urls_added_last_page = extend_film_urls_with_page(film_urls, page_urls, max_movies)
-    print_to_csv(f"Film URL total after page {current_page}: {len(film_urls)}/{max_movies}")
+    # print_to_csv(f"Film URL total after page {current_page}: {len(film_urls)}/{max_movies}")
     listing_last_url_prev_page = page_urls[-1]
     if len(film_urls) >= max_movies:
         break

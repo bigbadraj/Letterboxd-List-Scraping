@@ -23,6 +23,7 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 import json
 from bs4 import BeautifulSoup
+from urllib.parse import urlparse
 from selenium.common.exceptions import NoSuchElementException
 from credentials_loader import load_credentials
 
@@ -158,15 +159,17 @@ OFFICIAL_WHITELIST_PATH = os.path.join(LIST_DIR, 'Official Whitelist.xlsx')
 OFFICIAL_ONLY_WHITELIST_PATH = os.path.join(LIST_DIR, 'Official Only Whitelist.xlsx')
 OFFICIAL_ONLY_BLACKLIST_PATH = os.path.join(LIST_DIR, 'Official Only Blacklist.xlsx')
 ZERO_REVIEWS_PATH = os.path.join(LIST_DIR, 'Zero_Reviews.xlsx')  # Add new path
-CHROME_RESTART_EVERY_PAGES = 12
+# Keep a healthy browser session open to avoid unnecessary new CAPTCHA sessions.
+CHROME_RESTART_EVERY_PAGES = 0
 PAGE_LOAD_TIMEOUT = 60
 LISTING_FETCH_TIMEOUT = 30
 FILM_FETCH_TIMEOUT = 20
 BOUNDARY_HEAL_MAX_RETRIES = 5
 LISTING_PAGE_INNER_RETRIES = 30
 LISTING_CONTAINER_INNER_RETRIES = 35
-LISTING_RESTART_EVERY_CYCLES = 4  # full Chrome restart after this many failed page cycles
+LISTING_RESTART_EVERY_CYCLES = 0  # recover Chrome only when the current session is unhealthy
 LISTING_SHORT_PAGE_STABLE_READS = 3  # consecutive matching sub-72 counts before treating as last page
+LISTING_READINESS_TIMEOUT = 45
 HUMAN_DELAY_BETWEEN_PAGES = (0, 0)  # seconds between listing pages; set (0, 0) to disable
 # Routine skips are counted but not kept in memory (music can reject thousands per run).
 ROUTINE_REJECTION_REASONS = frozenset({
@@ -1240,7 +1243,10 @@ class LetterboxdScraper:
             print_to_csv(f"♻️ Chrome restarted ({reason})")
 
     def _maybe_restart_driver(self):
-        if self._pages_since_driver_start >= CHROME_RESTART_EVERY_PAGES:
+        if (
+            CHROME_RESTART_EVERY_PAGES
+            and self._pages_since_driver_start >= CHROME_RESTART_EVERY_PAGES
+        ):
             self._restart_driver(f"every {CHROME_RESTART_EVERY_PAGES} listing pages")
 
     def _find_elements_with_recovery(self, by, selector, film_url, field_name):
@@ -1288,6 +1294,100 @@ class LetterboxdScraper:
         except Exception:
             return True
 
+    def _wait_for_listing_page(self, url: str, timeout: int = LISTING_READINESS_TIMEOUT):
+        """Wait for complete film links, or a stable short final page."""
+        requested_path = urlparse(url).path.rstrip('/').lower()
+        allowed_paths = {requested_path}
+        if requested_path.endswith('/page/1'):
+            allowed_paths.add(requested_path[:-len('/page/1')])
+        short_page_state = {'count': None, 'streak': 0}
+
+        def listing_is_ready(current_driver):
+            try:
+                if urlparse(current_driver.current_url).path.rstrip('/').lower() not in allowed_paths:
+                    return False
+
+                containers = current_driver.find_elements(By.CSS_SELECTOR, 'li.posteritem')
+                count = len(containers)
+                if count == 0:
+                    return False
+
+                listing = current_driver.execute_script(
+                    """
+                    const cssReady = document.readyState === 'complete'
+                        && Array.from(document.querySelectorAll('link[rel~="stylesheet"]'))
+                            .some(link => {
+                                try {
+                                    const url = new URL(link.href);
+                                    return url.hostname === 's.ltrbxd.com'
+                                        && /\\/static\\/css\\/main-[^/]+\\.css$/.test(url.pathname)
+                                        && !!link.sheet;
+                                } catch (_) {
+                                    return false;
+                                }
+                            });
+                    const paths = Array.from(document.querySelectorAll('li.posteritem'))
+                        .slice(0, arguments[0])
+                        .map(container => {
+                            const link = container.querySelector('a[href*="/film/"]');
+                            return link ? new URL(link.href, location.href).pathname
+                                .replace(/\\/+$/, '').toLowerCase() : null;
+                        })
+                        .filter(Boolean);
+                    return {cssReady, paths};
+                    """,
+                    min(count, EXPECTED_LISTING_POSTERS_PER_PAGE),
+                )
+                if not listing['cssReady']:
+                    return False
+                unique_count = len(set(listing['paths']))
+                if count >= EXPECTED_LISTING_POSTERS_PER_PAGE:
+                    return (
+                        containers[:EXPECTED_LISTING_POSTERS_PER_PAGE]
+                        if unique_count >= EXPECTED_LISTING_POSTERS_PER_PAGE else False
+                    )
+
+                has_next = bool(current_driver.find_elements(By.CSS_SELECTOR, 'div.paginate-pages a.next'))
+                if has_next or unique_count != count:
+                    short_page_state['count'] = None
+                    short_page_state['streak'] = 0
+                    return False
+
+                if short_page_state['count'] == count:
+                    short_page_state['streak'] += 1
+                else:
+                    short_page_state['count'] = count
+                    short_page_state['streak'] = 1
+                if short_page_state['streak'] >= LISTING_SHORT_PAGE_STABLE_READS:
+                    return containers
+                return False
+            except Exception as error:
+                if is_network_error(error):
+                    return False
+                raise
+
+        return WebDriverWait(self.driver, timeout, poll_frequency=0.5).until(listing_is_ready)
+
+    def _load_listing_page(self, url: str, timeout: int = LISTING_READINESS_TIMEOUT):
+        """Wait for the requested listing even if navigation reports a transient error."""
+        navigation_error = None
+        try:
+            self.driver.get(url)
+        except Exception as error:
+            navigation_error = error
+            print_to_csv(f"Listing navigation reported an error; waiting for the page to finish: {error}")
+
+        try:
+            containers = self._wait_for_listing_page(url, timeout)
+        except Exception as wait_error:
+            if navigation_error is not None:
+                raise navigation_error from wait_error
+            raise
+
+        if navigation_error is not None:
+            print_to_csv("Listing page finished loading after the navigation error; continuing without reopening it.")
+        return containers
+
     def _collect_listing_entries_from_page(self, poster_count: int) -> List[dict]:
         """
         Parse listing HTML first so extraction does not depend on live Selenium
@@ -1333,7 +1433,12 @@ class LetterboxdScraper:
             if not self.recover_browser():
                 raise RuntimeError("Browser recovery failed")
 
-        self.driver.get(url)
+        navigation_error = None
+        try:
+            self.driver.get(url)
+        except Exception as error:
+            navigation_error = error
+            print_to_csv(f"Listing navigation reported an error; waiting for page {page_num}: {error}")
 
         try:
             page_title = self.driver.title
@@ -1341,15 +1446,19 @@ class LetterboxdScraper:
             if "not found" in page_title.lower() or "error" in page_title.lower():
                 return [], None
         except Exception as e:
-            print_to_csv(f"Warning: Could not get page title: {str(e)}")
-            if not self.is_browser_responsive():
-                print_to_csv("🚨 Browser crash detected during page load! Attempting recovery...")
-                if not self.recover_browser():
-                    raise RuntimeError("Browser recovery failed")
+            print_to_csv(f"Warning: Could not get page title yet: {str(e)}")
 
-        WebDriverWait(self.driver, 15).until(
-            EC.presence_of_element_located((By.CSS_SELECTOR, 'li.posteritem'))
-        )
+        try:
+            initial_containers = self._wait_for_listing_page(url, LISTING_READINESS_TIMEOUT)
+        except Exception as wait_error:
+            if navigation_error is not None:
+                raise navigation_error from wait_error
+            raise
+        if navigation_error is not None:
+            print_to_csv(
+                f"Listing page {page_num} finished loading after the navigation error; "
+                "continuing without reopening it."
+            )
 
         current_url = self.driver.current_url
         if current_url != url and "page" not in current_url:
@@ -1360,9 +1469,9 @@ class LetterboxdScraper:
             time.sleep(random.uniform(*HUMAN_DELAY_BETWEEN_PAGES))
 
         has_next = self._listing_page_has_next()
-        stable_short_count: Optional[int] = None
-        stable_short_streak = 0
-        poster_count = 0
+        poster_count = len(initial_containers)
+        stable_short_count = poster_count if poster_count < EXPECTED_LISTING_POSTERS_PER_PAGE and not has_next else None
+        stable_short_streak = LISTING_SHORT_PAGE_STABLE_READS if stable_short_count is not None else 0
 
         for retry in range(LISTING_CONTAINER_INNER_RETRIES):
             if not self.is_browser_responsive():
@@ -1371,9 +1480,7 @@ class LetterboxdScraper:
                     raise RuntimeError("Browser recovery failed")
 
             try:
-                film_containers = WebDriverWait(self.driver, 15).until(
-                    EC.presence_of_all_elements_located((By.CSS_SELECTOR, 'li.posteritem'))
-                )
+                film_containers = self._wait_for_listing_page(url, LISTING_READINESS_TIMEOUT)
                 poster_count = len(film_containers)
                 print_to_csv(f"Found {poster_count} film containers on attempt {retry + 1}")
 
@@ -1400,11 +1507,7 @@ class LetterboxdScraper:
                 )
                 delay = calculate_retry_delay(retry, base_delay=3)
                 time.sleep(delay)
-                self.driver.get(url)
-                WebDriverWait(self.driver, 15).until(
-                    EC.presence_of_element_located((By.CSS_SELECTOR, 'li.posteritem'))
-                )
-                time.sleep(2)
+                self._load_listing_page(url, LISTING_READINESS_TIMEOUT)
             except Exception as e:
                 if not self.is_browser_responsive():
                     print_to_csv("🚨 Browser crash detected while finding containers! Attempting recovery...")
@@ -1421,11 +1524,7 @@ class LetterboxdScraper:
                 else:
                     print_to_csv(f"Retry {retry + 1}/{LISTING_CONTAINER_INNER_RETRIES} finding containers: {str(e)}")
                 time.sleep(delay)
-                try:
-                    self.driver.refresh()
-                except Exception:
-                    self.driver.get(url)
-                time.sleep(2)
+                self._load_listing_page(url, LISTING_READINESS_TIMEOUT)
 
         if poster_count == 0:
             return [], None
@@ -1489,7 +1588,7 @@ class LetterboxdScraper:
                     )
                 time.sleep(delay)
 
-            if cycle % LISTING_RESTART_EVERY_CYCLES == 0:
+            if LISTING_RESTART_EVERY_CYCLES and cycle % LISTING_RESTART_EVERY_CYCLES == 0:
                 self._restart_driver(f"listing page {page_num} failed {cycle} full cycles")
             else:
                 wait = min(60, 10 * cycle)
@@ -1566,10 +1665,7 @@ class LetterboxdScraper:
             print_to_csv(f"Navigating to recovery page: {recovery_url}")
             print_to_csv("📝 Note: Duplicate prevention will skip any movies already processed in this session.")
 
-            self.driver.get(recovery_url)
-            WebDriverWait(self.driver, 15).until(
-                EC.presence_of_element_located((By.CSS_SELECTOR, 'li.posteritem'))
-            )
+            self._load_listing_page(recovery_url, LISTING_READINESS_TIMEOUT)
 
             self.current_url = recovery_url
             print_to_csv(f"✅ Browser recovery successful! Resumed from page {recovery_page}")

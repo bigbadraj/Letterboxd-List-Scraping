@@ -12,6 +12,7 @@ import os
 import platform
 from typing import Dict, List, Optional, Tuple
 import unicodedata
+from urllib.parse import urlparse
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 import json
@@ -595,6 +596,79 @@ class LetterboxdScraper:
         # Backwards-compat wrapper for shared normalizer.
         return letterboxd_film_url_key(film_url)
 
+    def _wait_for_full_listing_page(self, url: str, timeout: int = 45):
+        """Wait for a styled listing page with 72 containers and distinct film links."""
+        requested_path = urlparse(url).path.rstrip("/").lower()
+        allowed_paths = {requested_path}
+        if requested_path.endswith("/page/1"):
+            allowed_paths.add(requested_path[:-len("/page/1")])
+
+        def listing_is_complete(current_driver):
+            try:
+                listing = current_driver.execute_script(
+                    """
+                    const path = location.pathname.replace(/\\/+$/, '').toLowerCase();
+                    const cssReady = document.readyState === 'complete'
+                        && Array.from(document.querySelectorAll('link[rel~="stylesheet"]'))
+                            .some(link => {
+                                try {
+                                    const url = new URL(link.href);
+                                    return url.hostname === 's.ltrbxd.com'
+                                        && /\\/static\\/css\\/main-[^/]+\\.css$/.test(url.pathname)
+                                        && !!link.sheet;
+                                } catch (_) {
+                                    return false;
+                                }
+                            });
+                    const containers = Array.from(document.querySelectorAll('li.posteritem'));
+                    const filmPaths = containers.slice(0, arguments[0]).map(container => {
+                        const link = container.querySelector('a[href*="/film/"]');
+                        return link ? new URL(link.href, location.href).pathname
+                            .replace(/\\/+$/, '').toLowerCase() : null;
+                    }).filter(Boolean);
+                    return {path, cssReady, containerCount: containers.length, filmPaths};
+                    """,
+                    EXPECTED_LISTING_POSTERS_PER_PAGE,
+                )
+                if listing["path"] not in allowed_paths or not listing["cssReady"]:
+                    return False
+                if listing["containerCount"] < EXPECTED_LISTING_POSTERS_PER_PAGE:
+                    return False
+                if len(set(listing["filmPaths"])) == EXPECTED_LISTING_POSTERS_PER_PAGE:
+                    return current_driver.find_elements(
+                        By.CSS_SELECTOR, "li.posteritem"
+                    )[:EXPECTED_LISTING_POSTERS_PER_PAGE]
+                return False
+            except Exception as error:
+                if any(
+                    marker in str(error).lower()
+                    for marker in ("connection", "protocolerror", "timed out", "timeout", "reset")
+                ):
+                    return False
+                raise
+
+        return WebDriverWait(self.driver, timeout, poll_frequency=0.5).until(listing_is_complete)
+
+    def _load_full_listing_page(self, url: str, timeout: int = 45):
+        """Wait out transient navigation failures before deciding to retry the page."""
+        navigation_error = None
+        try:
+            self.driver.get(url)
+        except Exception as error:
+            navigation_error = error
+            print_to_csv(f"Listing navigation reported an error; waiting for the page to finish: {error}")
+
+        try:
+            containers = self._wait_for_full_listing_page(url, timeout)
+        except Exception as wait_error:
+            if navigation_error is not None:
+                raise navigation_error from wait_error
+            raise
+
+        if navigation_error is not None:
+            print_to_csv("Listing page finished loading after the navigation error; continuing without reopening it.")
+        return containers
+
     def _build_film_data_list_from_containers(self, film_containers) -> List[dict]:
         film_data_list: List[dict] = []
         for container in film_containers:
@@ -841,11 +915,7 @@ class LetterboxdScraper:
         prev_list: List[dict] = []
         for retry in range(container_retries):
             try:
-                self.driver.get(prev_url)
-                WebDriverWait(self.driver, 10).until(
-                    EC.presence_of_all_elements_located((By.CSS_SELECTOR, 'li.posteritem'))
-                )
-                prev_containers = self.driver.find_elements(By.CSS_SELECTOR, 'li.posteritem')
+                prev_containers = self._load_full_listing_page(prev_url, timeout=45)
                 n = len(prev_containers)
                 if n == EXPECTED_LISTING_POSTERS_PER_PAGE:
                     prev_list = self._build_film_data_list_from_containers(prev_containers)
@@ -855,8 +925,6 @@ class LetterboxdScraper:
                     f"retry {retry + 1}/{container_retries}"
                 )
                 time.sleep(3)
-                self.driver.get(prev_url)
-                time.sleep(2)
             except Exception as e:
                 print_to_csv(f"⚠️ Boundary heal load prev page: {e}")
                 time.sleep(3)
@@ -871,11 +939,7 @@ class LetterboxdScraper:
         refreshed: List[dict] = []
         for retry in range(container_retries):
             try:
-                self.driver.get(listing_url)
-                WebDriverWait(self.driver, 10).until(
-                    EC.presence_of_all_elements_located((By.CSS_SELECTOR, 'li.posteritem'))
-                )
-                cur_containers = self.driver.find_elements(By.CSS_SELECTOR, 'li.posteritem')
+                cur_containers = self._load_full_listing_page(listing_url, timeout=45)
                 n = len(cur_containers)
                 if n == EXPECTED_LISTING_POSTERS_PER_PAGE:
                     refreshed = self._build_film_data_list_from_containers(cur_containers)
@@ -885,8 +949,6 @@ class LetterboxdScraper:
                     f"retry {retry + 1}/{container_retries}"
                 )
                 time.sleep(3)
-                self.driver.get(listing_url)
-                time.sleep(2)
             except Exception as e:
                 print_to_csv(f"⚠️ Boundary heal load current page: {e}")
                 time.sleep(3)
@@ -946,9 +1008,10 @@ class LetterboxdScraper:
             
             # Send a GET request to the URL with retry mechanism
             page_retries = 20
+            listing_loaded = False
             for retry in range(page_retries):
                 try:
-                    self.driver.get(url)
+                    film_containers = self._load_full_listing_page(url)
                     
                     # Check if page loaded successfully
                     try:
@@ -957,29 +1020,28 @@ class LetterboxdScraper:
                         # Check if we got redirected to an error page
                         if "not found" in page_title.lower() or "error" in page_title.lower():
                             print_to_csv(f"❌ Page {self.page_number} appears to be an error page: {page_title}")
-                            self.page_number += 1
                             continue
                             
                     except Exception as e:
                         print_to_csv(f"Warning: Could not get page title: {str(e)}")
-                    
-                    # Wait for the page to load
-                    WebDriverWait(self.driver, 10).until(
-                        EC.presence_of_element_located((By.CSS_SELECTOR, 'li.posteritem'))
-                    )
                     
                     # Additional check: verify we're on the right page
                     current_url = self.driver.current_url
                     if current_url != url and "page" not in current_url:
                         print_to_csv(f"⚠️ Page redirected from {url} to {current_url}")
                     
+                    listing_loaded = True
                     break
                 except Exception as e:
                     if retry == page_retries - 1:
-                        print_to_csv(f"❌ Failed to load page after {page_retries} attempts: {str(e)}")
-                        # Try to move to next page instead of crashing
-                        print_to_csv(f"Moving to next page and continuing...")
-                        self.page_number += 1
+                        print_to_csv(
+                            f"❌ Page {self.page_number} did not load after {page_retries} attempts: {str(e)}"
+                        )
+                        try:
+                            self.driver.current_url
+                        except Exception:
+                            self._restart_driver("browser disconnected during listing load")
+                        print_to_csv(f"⏳ Retrying page {self.page_number} instead of skipping it...")
                         continue
                     print_to_csv(f"Retry {retry + 1}/{page_retries} loading page {self.page_number}: {str(e)}")
                     time.sleep(2)
@@ -988,6 +1050,10 @@ class LetterboxdScraper:
                     if "timeout" in str(e).lower() or "connection" in str(e).lower():
                         print_to_csv(f"⚠️ Network issue detected, waiting longer before retry...")
                         time.sleep(10)  # Wait longer for network issues
+
+            if not listing_loaded:
+                time.sleep(5)
+                continue
             
             #time.sleep(random.uniform(1.0, 1.5))
 
@@ -995,9 +1061,7 @@ class LetterboxdScraper:
             container_retries = 25
             for retry in range(container_retries):
                 try:
-                    film_containers = WebDriverWait(self.driver, 10).until(
-                        EC.presence_of_all_elements_located((By.CSS_SELECTOR, 'li.posteritem'))
-                    )
+                    film_containers = self._wait_for_full_listing_page(url, timeout=45)
                     n = len(film_containers)
                     print_to_csv(f"Found {n} film containers on attempt {retry + 1}")
                     if n == EXPECTED_LISTING_POSTERS_PER_PAGE:
@@ -1008,32 +1072,23 @@ class LetterboxdScraper:
                         f"reloading listing... (Attempt {retry + 1}/{container_retries})"
                     )
                     time.sleep(3)
-                    self.driver.get(url)
-                    WebDriverWait(self.driver, 10).until(
-                        EC.presence_of_element_located((By.CSS_SELECTOR, 'li.posteritem'))
-                    )
-                    time.sleep(2)
+                    film_containers = self._load_full_listing_page(url, timeout=45)
                 except Exception as e:
                     if retry == container_retries - 1:
                         print_to_csv(f"❌ Failed to find film containers after {container_retries} attempts: {str(e)}")
-                        print_to_csv("Moving to next page and continuing...")
+                        print_to_csv(f"⏳ Will retry listing page {self.page_number} without skipping it.")
                         film_containers = []
                         break
                     print_to_csv(f"Retry {retry + 1}/{container_retries} finding film containers: {str(e)}")
-                    time.sleep(5)
-                    self.driver.refresh()
-                    time.sleep(2)
-                    if "timeout" in str(e).lower():
-                        print_to_csv("⚠️ Timeout detected, waiting longer before retry...")
-                        time.sleep(10)
+                    continue
 
             n_posters = len(film_containers)
             if n_posters != EXPECTED_LISTING_POSTERS_PER_PAGE:
                 print_to_csv(
                     f"❌ After retries, expected exactly {EXPECTED_LISTING_POSTERS_PER_PAGE} posters, "
-                    f"found {n_posters}. Moving to next page..."
+                    f"found {n_posters}. Retrying page {self.page_number}..."
                 )
-                self.page_number += 1
+                time.sleep(5)
                 continue
 
             print_to_csv(f"\n{f' Page {self.page_number} ':=^100}")
@@ -1043,10 +1098,7 @@ class LetterboxdScraper:
             except Exception as e:
                 print_to_csv(f"⚠️ Listing HTML unavailable: {e}. Restarting Chrome and reloading page.")
                 self._restart_driver("listing session disconnected")
-                self.driver.get(url)
-                WebDriverWait(self.driver, 10).until(
-                    EC.presence_of_element_located((By.CSS_SELECTOR, 'li.posteritem'))
-                )
+                self._load_full_listing_page(url, timeout=45)
                 film_data_list = self._build_film_data_list_from_html(self.driver.page_source)
 
             if len(film_data_list) < n_posters:
