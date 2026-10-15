@@ -1217,6 +1217,7 @@ class LetterboxdScraper:
         self.top_movies_count = 0  # Track the number of movies added to the top genre list
         self.rejected_movies_count = 0  # Add counter for rejected movies
         self._listing_last_url_prev_page: Optional[str] = None
+        self._listing_page_has_next: Optional[bool] = None
         self._pages_since_driver_start = 0
         self.current_url = None
         self.last_successful_page = 1
@@ -1444,7 +1445,7 @@ class LetterboxdScraper:
             page_title = self.driver.title
             print_to_csv(f"Page loaded: {page_title}")
             if "not found" in page_title.lower() or "error" in page_title.lower():
-                return [], None
+                return None, f"unexpected listing page title: {page_title}"
         except Exception as e:
             print_to_csv(f"Warning: Could not get page title yet: {str(e)}")
 
@@ -1527,7 +1528,7 @@ class LetterboxdScraper:
                 self._load_listing_page(url, LISTING_READINESS_TIMEOUT)
 
         if poster_count == 0:
-            return [], None
+            return None, f"no film containers found on page {page_num}"
 
         if poster_count != EXPECTED_LISTING_POSTERS_PER_PAGE and has_next:
             return None, (
@@ -1542,14 +1543,14 @@ class LetterboxdScraper:
                 f"parsed {len(film_data_list)}/{poster_count} entries on page {page_num} (cycle {cycle})"
             )
 
+        self._listing_page_has_next = has_next
         print_to_csv(f"Collected {len(film_data_list)} movies from page {page_num}")
         return film_data_list, None
 
     def _load_listing_page_and_collect(self, page_num: int) -> Tuple[Optional[List[dict]], bool]:
         """
-        Load a listing page and collect all poster rows. Never skips a page with films;
-        retries with backoff, HTML fallback, and periodic Chrome restarts until successful.
-        Returns (entries, abort_scrape). entries is None only when abort_scrape is True.
+        Load a listing page and collect all poster rows without skipping incomplete pages.
+        Return (None, True) when retries are exhausted so the caller can retry the combination.
         """
         url = f'{self.base_url}page/{page_num}/'
         print_to_csv(f"\nLoading page {page_num}: {url}")
@@ -1565,6 +1566,12 @@ class LetterboxdScraper:
                     if failure_reason is None:
                         return film_data_list, False
                     print_to_csv(f"⚠️ Page {page_num} not ready: {failure_reason}")
+                    if failure_reason.startswith("unexpected listing page title:"):
+                        print_to_csv(
+                            f"❌ Page {page_num} returned an error page instead of a listing; "
+                            "aborting this attempt so the genre/sort combination can be retried."
+                        )
+                        return None, True
                 except RuntimeError:
                     return None, True
                 except Exception as e:
@@ -1588,15 +1595,12 @@ class LetterboxdScraper:
                     )
                 time.sleep(delay)
 
-            if LISTING_RESTART_EVERY_CYCLES and cycle % LISTING_RESTART_EVERY_CYCLES == 0:
-                self._restart_driver(f"listing page {page_num} failed {cycle} full cycles")
-            else:
-                wait = min(60, 10 * cycle)
-                print_to_csv(
-                    f"⏳ Page {page_num}: completed cycle {cycle} without success; "
-                    f"waiting {wait}s before next cycle..."
-                )
-                time.sleep(wait)
+            print_to_csv(
+                f"❌ Page {page_num} could not be collected after "
+                f"{LISTING_PAGE_INNER_RETRIES} attempts; aborting this attempt so the "
+                "genre/sort combination can be retried."
+            )
+            return None, True
 
     def _fetch_film_html(self, film_url: str) -> Optional[str]:
         html = self._fetch_http(film_url, FILM_FETCH_TIMEOUT)
@@ -2168,19 +2172,31 @@ class LetterboxdScraper:
 
         while self.valid_movies_count < MAX_MOVIES:
             if self.page_number > 1000:
-                print_to_csv(f"⚠️ Reached page {self.page_number}, which seems too high. Saving progress and stopping.")
-                self.save_results_emergency()
-                break
+                raise RuntimeError(
+                    f"Reached page {self.page_number}, beyond the safety limit; "
+                    "the genre/sort combination is incomplete."
+                )
 
             self._maybe_restart_driver()
             cur_page = self.page_number
             film_data_list, abort = self._load_listing_page_and_collect(cur_page)
             if abort:
-                return
+                raise RuntimeError(
+                    f"Scraping aborted before page {cur_page} could be collected; "
+                    "the genre/sort combination is incomplete."
+                )
+
+            if film_data_list is None:
+                raise RuntimeError(
+                    f"No film data was returned for page {cur_page}; "
+                    "the genre/sort combination is incomplete."
+                )
 
             if not film_data_list:
-                print_to_csv(f"No films on page {cur_page} — end of genre listing.")
-                break
+                raise RuntimeError(
+                    f"Page {cur_page} contained no film data; "
+                    "the genre/sort combination is incomplete."
+                )
 
             self._pages_since_driver_start += 1
             film_data_list = self._trim_listing_boundary_overlap(film_data_list, cur_page)
@@ -2195,6 +2211,12 @@ class LetterboxdScraper:
 
             if film_data_list:
                 self._listing_last_url_prev_page = film_data_list[-1]['url']
+
+            if self._listing_page_has_next is None:
+                raise RuntimeError(f"Pagination state was not recorded for page {cur_page}.")
+            if not self._listing_page_has_next:
+                print_to_csv(f"Reached the final genre listing page {cur_page}.")
+                break
 
             self.page_number += 1
 
@@ -2644,6 +2666,7 @@ class LetterboxdScraper:
         self.top_movies_count = 0
         self.rejected_movies_count = 0
         self._listing_last_url_prev_page = None
+        self._listing_page_has_next = None
         self._pages_since_driver_start = 0
         self.current_url = None
         self.last_successful_page = 1

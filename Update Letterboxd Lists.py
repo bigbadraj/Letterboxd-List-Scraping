@@ -1,3 +1,4 @@
+import ast
 import sys
 import time
 from selenium import webdriver
@@ -20,6 +21,125 @@ import logging
 import traceback
 from credentials_loader import load_credentials
 from urllib.parse import urlparse
+
+
+def load_scraper_limits():
+    """Read CSV output limits from their respective scraper scripts."""
+    source_limits = {
+        "Genre 250s.py": {"MAX_MOVIES"},
+        "Top 250 Anything.py": {"max_movies"},
+        "5000 Pop and Top.py": {
+            "MAX_MOVIES_5000",
+            "MAX_MOVIES_MPAA",
+            "MAX_MOVIES_RUNTIME",
+            "MAX_MOVIES_CONTINENT",
+            "CHUNK_SIZE",
+            "MAX_180_POPULAR",
+            "MAX_240_POPULAR",
+            "MAX_MOVIES_G_POPULAR",
+            "MAX_MOVIES_NC17_POPULAR",
+            "MAX_MOVIES_AFRICA_POPULAR",
+            "MAX_MOVIES_OCEANIA_POPULAR",
+            "MAX_MOVIES_SOUTH_AMERICA_POPULAR",
+            "MAX_180_RATING",
+            "MAX_240_RATING",
+            "MAX_MOVIES_G_RATING",
+            "MAX_MOVIES_NC17_RATING",
+            "MAX_MOVIES_AFRICA_RATING",
+            "MAX_MOVIES_OCEANIA_RATING",
+            "MAX_MOVIES_SOUTH_AMERICA_RATING",
+        },
+    }
+    limits = {}
+    for script_name, names in source_limits.items():
+        script_path = os.path.join(base_dir, script_name)
+        with open(script_path, "r", encoding="utf-8") as source_file:
+            tree = ast.parse(source_file.read(), filename=script_path)
+        found = {}
+        for node in tree.body:
+            if not isinstance(node, ast.Assign):
+                continue
+            for target in node.targets:
+                if isinstance(target, ast.Name) and target.id in names:
+                    found[target.id] = ast.literal_eval(node.value)
+        missing = names - found.keys()
+        if missing:
+            raise RuntimeError(
+                f"Could not find list-size constants {sorted(missing)} in {script_name}."
+            )
+        limits[script_name] = found
+    return limits
+
+
+def expected_list_rows(list_name, limits):
+    """Return the exact generated CSV row count, or None for user-maintained lists."""
+    if list_name.startswith("top_250_"):
+        return limits["Genre 250s.py"]["MAX_MOVIES"]
+    if list_name == "film_titles":
+        return limits["Top 250 Anything.py"]["max_movies"]
+    if list_name in {"box_office_real", "box_office_inflated"}:
+        return 250
+
+    scraper_limits = limits["5000 Pop and Top.py"]
+    scrape_type = "POPULAR" if list_name.endswith("_pop_movies") else "RATING"
+    stem = list_name.removesuffix("_pop_movies").removesuffix("_top_movies")
+    if stem in {"G", "PG", "PG-13", "R", "NC-17"}:
+        if stem == "G":
+            return scraper_limits[f"MAX_MOVIES_G_{scrape_type}"]
+        if stem == "NC-17":
+            return scraper_limits[f"MAX_MOVIES_NC17_{scrape_type}"]
+        return scraper_limits["MAX_MOVIES_MPAA"]
+
+    dynamic_caps = {
+        "africa": f"MAX_MOVIES_AFRICA_{scrape_type}",
+        "oceania": f"MAX_MOVIES_OCEANIA_{scrape_type}",
+        "south_america": f"MAX_MOVIES_SOUTH_AMERICA_{scrape_type}",
+        "3_Hours_or_Greater": f"MAX_180_{scrape_type}",
+        "4_Hours_or_Greater": f"MAX_240_{scrape_type}",
+    }
+    if stem in dynamic_caps:
+        return scraper_limits[dynamic_caps[stem]]
+    if stem in {"north_america", "europe", "asia"}:
+        return scraper_limits["MAX_MOVIES_CONTINENT"]
+    if stem in {"90_Minutes_or_Less", "2_Hours_or_Less"}:
+        return scraper_limits["MAX_MOVIES_RUNTIME"]
+    return None
+
+
+def expected_special_chunk_rows(chunk_index, limits):
+    """Return the exact size of one chunk in a 5,000-film list."""
+    scraper_limits = limits["5000 Pop and Top.py"]
+    return min(
+        scraper_limits["CHUNK_SIZE"],
+        scraper_limits["MAX_MOVIES_5000"] - chunk_index * scraper_limits["CHUNK_SIZE"],
+    )
+
+
+def csv_data_row_count(csv_path):
+    """Count non-empty CSV data records, excluding the header."""
+    with open(csv_path, "r", newline="", encoding="utf-8-sig") as csv_file:
+        reader = csv.reader(csv_file)
+        next(reader, None)
+        return sum(1 for row in reader if any(field.strip() for field in row))
+
+
+def incomplete_csv_message(csv_path, expected_rows):
+    """Return a skip reason when a CSV is missing, unreadable, empty, or has an unexpected row count."""
+    if not os.path.exists(csv_path):
+        return f"CSV file {os.path.basename(csv_path)} not found"
+    try:
+        actual_rows = csv_data_row_count(csv_path)
+    except (csv.Error, OSError, UnicodeError) as error:
+        return f"CSV file {os.path.basename(csv_path)} could not be read: {error}"
+    if expected_rows is not None and actual_rows != expected_rows:
+        return (
+            f"CSV file {os.path.basename(csv_path)} has {actual_rows} data rows; "
+            f"expected {expected_rows}"
+        )
+    if actual_rows == 0:
+        return f"CSV file {os.path.basename(csv_path)} is empty"
+    return None
+
 
 # Explicit driver.quit() handles shutdown; suppress duplicate destructor cleanup.
 try:
@@ -164,16 +284,22 @@ def hard_reload_page(driver, log_and_print_func=None, reason="page failed to loa
         if log_and_print_func:
             log_and_print_func(f"⚠️ Hard reloading page after {reason}: {current_url}")
         driver.execute_script("window.location.reload(true);")
-        time.sleep(3)
+        WebDriverWait(driver, 60, poll_frequency=0.5).until(
+            _letterboxd_main_stylesheet_is_ready
+        )
         return True
     except Exception as error:
         if log_and_print_func:
             log_and_print_func(f"⚠️ Hard reload attempt failed: {error}")
         try:
             driver.refresh()
-            time.sleep(3)
+            WebDriverWait(driver, 60, poll_frequency=0.5).until(
+                _letterboxd_main_stylesheet_is_ready
+            )
             return True
-        except Exception:
+        except Exception as refresh_error:
+            if log_and_print_func:
+                log_and_print_func(f"⚠️ Refresh did not fully load the page: {refresh_error}")
             return False
 
 
@@ -336,6 +462,24 @@ def navigate_to_list_editor(driver, edit_url, log_and_print_func, timeout=45):
 
         WebDriverWait(driver, timeout, poll_frequency=0.5).until(requested_editor_is_ready)
     except Exception as wait_error:
+        try:
+            current_url = driver.current_url
+            page_title = driver.title
+            stylesheet_ready = _letterboxd_main_stylesheet_is_ready(driver)
+            import_button_ready = _has_import_button(driver)
+        except Exception as diagnostic_error:
+            current_url = "(unavailable)"
+            page_title = "(unavailable)"
+            stylesheet_ready = False
+            import_button_ready = False
+            log_and_print_func(f"⚠️ Could not collect editor diagnostics: {diagnostic_error}")
+        log_and_print_func(
+            "❌ List editor readiness failed: "
+            f"requested_path={requested_path!r}, current_url={current_url!r}, "
+            f"title={page_title!r}, stylesheet_ready={stylesheet_ready}, "
+            f"import_button_ready={import_button_ready}, "
+            f"error_type={type(wait_error).__name__}, error={wait_error}"
+        )
         if navigation_error is not None:
             raise navigation_error from wait_error
         raise
@@ -365,9 +509,12 @@ def wait_for_visible_input(driver, name, timeout=15):
 
 
 def wait_for_sign_in_form(driver, timeout=30):
-    """Wait for the visible Letterboxd sign-in fields and control to render."""
+    """Wait for a fully loaded, styled Letterboxd page and its sign-in controls."""
     def find_form(current_driver):
         try:
+            if not _letterboxd_main_stylesheet_is_ready(current_driver):
+                return False
+
             forms = current_driver.find_elements(By.TAG_NAME, "form")
             for form in forms:
                 visible_inputs = [
@@ -571,72 +718,93 @@ def import_csv_into_list(
     open_editor=False,
 ):
     """Run the regular list-import workflow for one CSV chunk."""
-    if open_editor:
-        driver = navigate_to_list_editor(driver, edit_url, log_and_print_func)
-    else:
-        wait_for_list_editor(driver)
-    safe_click_import_button(driver, log_and_print_func)
-
-    log_and_print_func(f"✅ Selecting CSV file: {csv_file_name}")
-    time.sleep(1)
-    pyautogui.hotkey('alt', 'd')
-    time.sleep(1)
-    pyautogui.typewrite(os.path.dirname(csv_path), interval=0.1)
-    pyautogui.press('enter')
-    time.sleep(1)
-    pyautogui.hotkey('alt', 'n')
-    time.sleep(0.5)
-    pyautogui.typewrite(csv_file_name, interval=0.1)
-    time.sleep(1)
-    pyautogui.press('enter')
-
-    time.sleep(2)
-    wait_for_import_results(driver)
-
+    stage = "waiting for list editor"
     try:
-        hide_successful_matches_handle = driver.find_element(
-            By.CSS_SELECTOR, ".import-toggle .handle"
-        )
-        try:
-            hide_successful_matches_handle.click()
-        except Exception:
-            driver.execute_script("arguments[0].click();", hide_successful_matches_handle)
-        log_and_print_func("✅ Clicked the 'Hide Successful Matches' handle.")
-    except Exception as error:
-        log_and_print_func(f"❌ Failed to click the handle: {error}")
+        if open_editor:
+            driver = navigate_to_list_editor(driver, edit_url, log_and_print_func)
+        else:
+            wait_for_list_editor(driver)
 
-    time.sleep(5)
-    if replace_existing:
+        stage = "opening import dialog"
+        safe_click_import_button(driver, log_and_print_func)
+
+        stage = "selecting CSV file"
+        log_and_print_func(f"✅ Selecting CSV file: {csv_file_name}")
+        time.sleep(1)
+        pyautogui.hotkey('alt', 'd')
+        time.sleep(1)
+        pyautogui.typewrite(os.path.dirname(csv_path), interval=0.1)
+        pyautogui.press('enter')
+        time.sleep(1)
+        pyautogui.hotkey('alt', 'n')
+        time.sleep(0.5)
+        pyautogui.typewrite(csv_file_name, interval=0.1)
+        time.sleep(1)
+        pyautogui.press('enter')
+
+        stage = "waiting for import results"
+        time.sleep(2)
+        wait_for_import_results(driver)
+
+        stage = "configuring import options"
         try:
-            replace_substitute = driver.find_element(
-                By.CSS_SELECTOR, "label[for='replace-original'] .substitute"
+            hide_successful_matches_handle = driver.find_element(
+                By.CSS_SELECTOR, ".import-toggle .handle"
             )
             try:
-                replace_substitute.click()
+                hide_successful_matches_handle.click()
             except Exception:
-                driver.execute_script("arguments[0].click();", replace_substitute)
-            log_and_print_func(
-                "✅ Clicked the 'Replace existing list with imported films' substitute icon."
-            )
+                driver.execute_script("arguments[0].click();", hide_successful_matches_handle)
+            log_and_print_func("✅ Clicked the 'Hide Successful Matches' handle.")
         except Exception as error:
-            log_and_print_func(f"❌ Failed to click the substitute icon: {error}")
+            log_and_print_func(f"❌ Failed to click the handle: {error}")
 
-    time.sleep(1)
-    click_add_films_button(driver, log_and_print_func)
-    driver = navigate_to_list_editor(driver, edit_url, log_and_print_func)
+        time.sleep(5)
+        if replace_existing:
+            try:
+                replace_substitute = driver.find_element(
+                    By.CSS_SELECTOR, "label[for='replace-original'] .substitute"
+                )
+                try:
+                    replace_substitute.click()
+                except Exception:
+                    driver.execute_script("arguments[0].click();", replace_substitute)
+                log_and_print_func(
+                    "✅ Clicked the 'Replace existing list with imported films' substitute icon."
+                )
+            except Exception as error:
+                log_and_print_func(f"❌ Failed to click the substitute icon: {error}")
 
-    if description is not None:
-        update_import_description(driver, description, log_and_print_func)
+        stage = "submitting imported films"
+        time.sleep(1)
+        click_add_films_button(driver, log_and_print_func)
 
-    log_and_print_func(f"✅ Saving the changes from {driver.current_url}.")
-    save_button = find_save_button(driver)
-    driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", save_button)
-    try:
-        save_button.click()
-    except Exception:
-        driver.execute_script("arguments[0].click();", save_button)
-    time.sleep(7)
-    return driver
+        stage = "waiting for list editor after import"
+        driver = navigate_to_list_editor(driver, edit_url, log_and_print_func)
+
+        if description is not None:
+            stage = "updating list description"
+            update_import_description(driver, description, log_and_print_func)
+
+        stage = "saving updated list"
+        log_and_print_func(f"✅ Saving the changes from {driver.current_url}.")
+        save_button = find_save_button(driver)
+        driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", save_button)
+        try:
+            save_button.click()
+        except Exception:
+            driver.execute_script("arguments[0].click();", save_button)
+        time.sleep(7)
+        return driver
+    except Exception as error:
+        try:
+            current_url = driver.current_url
+        except Exception:
+            current_url = "(unavailable)"
+        raise RuntimeError(
+            f"CSV import {csv_file_name!r} failed while {stage} "
+            f"at {current_url!r}: {type(error).__name__}: {error}"
+        ) from error
 
 
 def is_blank_or_unusable_page(driver):
@@ -687,7 +855,7 @@ def is_blank_or_unusable_page(driver):
 def create_chrome_driver(log_and_print_func):
     """Create a fresh undetected Chrome driver for Letterboxd."""
     options = uc.ChromeOptions()
-    options.page_load_strategy = 'eager'
+    options.page_load_strategy = 'normal'
     options.add_argument("--window-size=1280,900")
     options.add_argument("--start-maximized")
     options.add_argument("--disable-dev-shm-usage")
@@ -1012,18 +1180,38 @@ def update_letterboxd_lists():
     # Handle special lists
     special_lists = {
         "rating_filtered_movie_titles1": {
-            "url": "https://letterboxd.com/bigbadraj/list/top-2500-highest-rated-narrative-feature/edit/",
+            "url": "https://letterboxd.com/bigbadraj/list/top-5000-highest-rated-narrative-feature/edit/",
             "csv_file_name_1": "rating_filtered_movie_titles1.csv",
             "csv_file_name_2": "rating_filtered_movie_titles2.csv",
             "csv_file_name_3": "rating_filtered_movie_titles3.csv"
         },
         "popular_filtered_movie_titles1": {
-            "url": "https://letterboxd.com/bigbadraj/list/top-2500-most-popular-narrative-feature-films/edit/",
+            "url": "https://letterboxd.com/bigbadraj/list/top-5000-most-popular-narrative-feature-films/edit/",
             "csv_file_name_1": "popular_filtered_movie_titles1.csv",
             "csv_file_name_2": "popular_filtered_movie_titles2.csv",
             "csv_file_name_3": "popular_filtered_movie_titles3.csv"
         }
     }
+
+    only_list = os.environ.get("LETTERBOXD_LISTS_ONLY")
+    if only_list:
+        list_groups = (
+            lists_to_update_easy,
+            personal_lists,
+            lists_with_descriptions,
+            special_lists,
+        )
+        configured_names = {name for group in list_groups for name in group}
+        if only_list not in configured_names:
+            raise ValueError(
+                f"LETTERBOXD_LISTS_ONLY={only_list!r} is not a configured list name."
+            )
+        for group in list_groups:
+            for name in list(group):
+                if name != only_list:
+                    del group[name]
+
+    scraper_limits = load_scraper_limits()
 
     driver = None
 
@@ -1055,6 +1243,19 @@ def update_letterboxd_lists():
                     results.append({
                         'list_name': list_name,
                         'status': f'Failed to update: CSV file {csv_file_name} not found'
+                    })
+                    continue
+
+                incomplete_reason = incomplete_csv_message(
+                    csv_file_path,
+                    expected_list_rows(list_name, scraper_limits),
+                )
+                if incomplete_reason:
+                    log_and_print(f"❌ {incomplete_reason}")
+                    log_and_print(f"⏩ Skipping list update for {list_name} - CSV is incomplete")
+                    results.append({
+                        'list_name': list_name,
+                        'status': f'Skipped: {incomplete_reason}'
                     })
                     continue
 
@@ -1188,6 +1389,18 @@ def update_letterboxd_lists():
                 })
                 continue
 
+            incomplete_reason = incomplete_csv_message(
+                csv_file_path,
+                expected_list_rows(list_name, scraper_limits),
+            )
+            if incomplete_reason:
+                log_and_print(f"⏩ Skipping {list_name}: {incomplete_reason}.")
+                results.append({
+                    'list_name': list_name,
+                    'status': f'Skipped: {incomplete_reason}'
+                })
+                continue
+
             log_and_print(f"✅ Updating personal list: {list_name}")
             try:
                 import_simple_list(
@@ -1227,6 +1440,19 @@ def update_letterboxd_lists():
                     results.append({
                         'list_name': list_name,
                         'status': f'Failed to update: CSV file {csv_file_name} not found'
+                    })
+                    continue
+
+                incomplete_reason = incomplete_csv_message(
+                    csv_file_path,
+                    expected_list_rows(list_name, scraper_limits),
+                )
+                if incomplete_reason:
+                    log_and_print(f"❌ {incomplete_reason}")
+                    log_and_print(f"⏩ Skipping list update for {list_name} - CSV is incomplete")
+                    results.append({
+                        'list_name': list_name,
+                        'status': f'Skipped: {incomplete_reason}'
                     })
                     continue
 
@@ -1358,6 +1584,25 @@ def update_letterboxd_lists():
                     results.append({
                         'list_name': list_name,
                         'status': f'Failed to update: CSV file(s) {", ".join(missing_csv_files)} not found'
+                    })
+                    continue
+
+                incomplete_chunks = []
+                for chunk_index, file_name in enumerate(csv_file_names):
+                    csv_path = os.path.join(output_dir, file_name)
+                    reason = incomplete_csv_message(
+                        csv_path,
+                        expected_special_chunk_rows(chunk_index, scraper_limits),
+                    )
+                    if reason:
+                        incomplete_chunks.append(reason)
+                if incomplete_chunks:
+                    reason = "; ".join(incomplete_chunks)
+                    log_and_print(f"❌ Incomplete special-list CSV data: {reason}")
+                    log_and_print(f"⏩ Skipping special list update for {list_name} - CSV is incomplete")
+                    results.append({
+                        'list_name': list_name,
+                        'status': f'Skipped: {reason}'
                     })
                     continue
 
@@ -1621,6 +1866,7 @@ def update_letterboxd_lists():
 
             except Exception as e:
                 log_and_print(f"❌ Failed to update special list: {list_name}. Error: {str(e)}")
+                log_and_print(traceback.format_exc())
                 # Append failure result for special list
                 results.append({
                     'list_name': list_name,
