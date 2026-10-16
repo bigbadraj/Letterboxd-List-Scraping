@@ -131,7 +131,11 @@ CHROME_PROFILE_DIR = None    # e.g. 'Default' or 'Profile 1'
 # Define a custom print function
 def print_to_csv(message: str):
     """Prints a message to the terminal and appends it to All_Outputs.csv."""
-    print(message)  # Print to terminal
+    try:
+        print(message)
+    except UnicodeEncodeError:
+        encoding = sys.stdout.encoding or 'utf-8'
+        print(message.encode(encoding, errors='replace').decode(encoding))
     with open(os.path.join(BASE_DIR, 'All_Outputs.csv'), mode='a', newline='', encoding='utf-8') as file:
         writer = csv.writer(file)
         writer.writerow([message])  # Write the message as a new row
@@ -1288,10 +1292,10 @@ class LetterboxdScraper:
             pass
         return None
 
-    def _listing_page_has_next(self) -> bool:
+    def _has_next_listing_page(self) -> bool:
         """True if the current listing page has a paginate 'next' link."""
         try:
-            return bool(self.driver.find_elements(By.CSS_SELECTOR, 'div.paginate-pages a.next'))
+            return bool(self.driver.find_elements(By.CSS_SELECTOR, 'div.paginate-nextprev a.next'))
         except Exception:
             return True
 
@@ -1315,31 +1319,26 @@ class LetterboxdScraper:
 
                 listing = current_driver.execute_script(
                     """
-                    const cssReady = document.readyState === 'complete'
-                        && Array.from(document.querySelectorAll('link[rel~="stylesheet"]'))
-                            .some(link => {
-                                try {
-                                    const url = new URL(link.href);
-                                    return url.hostname === 's.ltrbxd.com'
-                                        && /\\/static\\/css\\/main-[^/]+\\.css$/.test(url.pathname)
-                                        && !!link.sheet;
-                                } catch (_) {
-                                    return false;
-                                }
-                            });
                     const paths = Array.from(document.querySelectorAll('li.posteritem'))
                         .slice(0, arguments[0])
                         .map(container => {
+                            const component = container.querySelector('.react-component');
                             const link = container.querySelector('a[href*="/film/"]');
-                            return link ? new URL(link.href, location.href).pathname
+                            const href = (link && link.href)
+                                || (component && (component.getAttribute('data-target-link')
+                                    || component.getAttribute('data-item-link')));
+                            return href ? new URL(href, location.href).pathname
                                 .replace(/\\/+$/, '').toLowerCase() : null;
                         })
                         .filter(Boolean);
-                    return {cssReady, paths};
+                    return {
+                        pageReady: document.readyState !== 'loading',
+                        paths
+                    };
                     """,
                     min(count, EXPECTED_LISTING_POSTERS_PER_PAGE),
                 )
-                if not listing['cssReady']:
+                if not listing['pageReady']:
                     return False
                 unique_count = len(set(listing['paths']))
                 if count >= EXPECTED_LISTING_POSTERS_PER_PAGE:
@@ -1348,7 +1347,7 @@ class LetterboxdScraper:
                         if unique_count >= EXPECTED_LISTING_POSTERS_PER_PAGE else False
                     )
 
-                has_next = bool(current_driver.find_elements(By.CSS_SELECTOR, 'div.paginate-pages a.next'))
+                has_next = bool(current_driver.find_elements(By.CSS_SELECTOR, 'div.paginate-nextprev a.next'))
                 if has_next or unique_count != count:
                     short_page_state['count'] = None
                     short_page_state['streak'] = 0
@@ -1469,7 +1468,7 @@ class LetterboxdScraper:
         if HUMAN_DELAY_BETWEEN_PAGES[1] > 0:
             time.sleep(random.uniform(*HUMAN_DELAY_BETWEEN_PAGES))
 
-        has_next = self._listing_page_has_next()
+        has_next = self._has_next_listing_page()
         poster_count = len(initial_containers)
         stable_short_count = poster_count if poster_count < EXPECTED_LISTING_POSTERS_PER_PAGE and not has_next else None
         stable_short_streak = LISTING_SHORT_PAGE_STABLE_READS if stable_short_count is not None else 0

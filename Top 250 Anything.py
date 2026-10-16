@@ -8,6 +8,7 @@ import pandas as pd
 import re
 import os
 import platform
+import sys
 from urllib.parse import urljoin, urlparse
 from tqdm import tqdm
 import csv
@@ -53,7 +54,11 @@ CHROME_PROFILE_DIR = None    # e.g. 'Default' or 'Profile 1'
 # Define a custom print function
 def print_to_csv(message: str):
     """Prints a message to the terminal and appends it to All_Outputs.csv."""
-    print(message)  # Print to terminal
+    try:
+        print(message)
+    except UnicodeEncodeError:
+        encoding = sys.stdout.encoding or 'utf-8'
+        print(message.encode(encoding, errors='replace').decode(encoding))
     with open(os.path.join(output_dir, 'All_Outputs.csv'), mode='a', newline='', encoding='utf-8') as file:
         writer = csv.writer(file)
         writer.writerow([message])  # Write the message as a new row
@@ -373,18 +378,6 @@ def load_listing_page_and_extract_ordered_urls(listing_page_num):
 
                 listing = current_driver.execute_script(
                     """
-                    const cssReady = document.readyState === 'complete'
-                        && Array.from(document.querySelectorAll('link[rel~="stylesheet"]'))
-                            .some(link => {
-                                try {
-                                    const url = new URL(link.href);
-                                    return url.hostname === 's.ltrbxd.com'
-                                        && /\\/static\\/css\\/main-[^/]+\\.css$/.test(url.pathname)
-                                        && !!link.sheet;
-                                } catch (_) {
-                                    return false;
-                                }
-                            });
                     const containers = Array.from(document.querySelectorAll(arguments[0]));
                     const hrefs = containers
                         .slice(0, arguments[1])
@@ -392,13 +385,17 @@ def load_listing_page_and_extract_ordered_urls(listing_page_num):
                             const link = container.querySelector('a[href*="/film/"]');
                             return link ? link.href : null;
                         });
-                    return {cssReady, containerCount: containers.length, hrefs};
+                    return {
+                        pageReady: document.readyState !== 'loading',
+                        containerCount: containers.length,
+                        hrefs
+                    };
                     """,
                     LISTING_CONTAINER_SELECTOR,
                     EXPECTED_LISTING_CONTAINERS,
                 )
                 attempt_state['container_count'] = listing['containerCount']
-                if not listing['cssReady'] or listing['containerCount'] < EXPECTED_LISTING_CONTAINERS:
+                if not listing['pageReady'] or listing['containerCount'] < EXPECTED_LISTING_CONTAINERS:
                     return False
 
                 hrefs = listing['hrefs']

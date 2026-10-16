@@ -74,7 +74,11 @@ CHROME_PROFILE_DIR = None    # e.g. 'Default' or 'Profile 1'
 # Define a custom print function
 def print_to_csv(message: str):
     """Prints a message to the terminal and appends it to All_Outputs.csv."""
-    print(message)  # Print to terminal
+    try:
+        print(message)
+    except UnicodeEncodeError:
+        encoding = sys.stdout.encoding or 'utf-8'
+        print(message.encode(encoding, errors='replace').decode(encoding))
     with open(os.path.join(BASE_DIR, 'All_Outputs.csv'), mode='a', newline='', encoding='utf-8') as file:
         writer = csv.writer(file)
         writer.writerow([message])  # Write the message as a new row
@@ -597,7 +601,7 @@ class LetterboxdScraper:
         return letterboxd_film_url_key(film_url)
 
     def _wait_for_full_listing_page(self, url: str, timeout: int = 45):
-        """Wait for a styled listing page with 72 containers and distinct film links."""
+        """Wait for a ready listing page with 72 containers and distinct film links."""
         requested_path = urlparse(url).path.rstrip("/").lower()
         allowed_paths = {requested_path}
         if requested_path.endswith("/page/1"):
@@ -608,29 +612,26 @@ class LetterboxdScraper:
                 listing = current_driver.execute_script(
                     """
                     const path = location.pathname.replace(/\\/+$/, '').toLowerCase();
-                    const cssReady = document.readyState === 'complete'
-                        && Array.from(document.querySelectorAll('link[rel~="stylesheet"]'))
-                            .some(link => {
-                                try {
-                                    const url = new URL(link.href);
-                                    return url.hostname === 's.ltrbxd.com'
-                                        && /\\/static\\/css\\/main-[^/]+\\.css$/.test(url.pathname)
-                                        && !!link.sheet;
-                                } catch (_) {
-                                    return false;
-                                }
-                            });
                     const containers = Array.from(document.querySelectorAll('li.posteritem'));
                     const filmPaths = containers.slice(0, arguments[0]).map(container => {
+                        const component = container.querySelector('.react-component');
                         const link = container.querySelector('a[href*="/film/"]');
-                        return link ? new URL(link.href, location.href).pathname
+                        const href = (link && link.href)
+                            || (component && (component.getAttribute('data-target-link')
+                                || component.getAttribute('data-item-link')));
+                        return href ? new URL(href, location.href).pathname
                             .replace(/\\/+$/, '').toLowerCase() : null;
                     }).filter(Boolean);
-                    return {path, cssReady, containerCount: containers.length, filmPaths};
+                    return {
+                        path,
+                        pageReady: document.readyState !== 'loading',
+                        containerCount: containers.length,
+                        filmPaths
+                    };
                     """,
                     EXPECTED_LISTING_POSTERS_PER_PAGE,
                 )
-                if listing["path"] not in allowed_paths or not listing["cssReady"]:
+                if listing["path"] not in allowed_paths or not listing["pageReady"]:
                     return False
                 if listing["containerCount"] < EXPECTED_LISTING_POSTERS_PER_PAGE:
                     return False
@@ -1033,14 +1034,17 @@ class LetterboxdScraper:
                     listing_loaded = True
                     break
                 except Exception as e:
+                    try:
+                        self.driver.current_url
+                    except Exception:
+                        self._restart_driver("browser disconnected during listing load")
+                        print_to_csv(f"⏳ Restarted Chrome; retrying page {self.page_number}...")
+                        continue
+
                     if retry == page_retries - 1:
                         print_to_csv(
                             f"❌ Page {self.page_number} did not load after {page_retries} attempts: {str(e)}"
                         )
-                        try:
-                            self.driver.current_url
-                        except Exception:
-                            self._restart_driver("browser disconnected during listing load")
                         print_to_csv(f"⏳ Retrying page {self.page_number} instead of skipping it...")
                         continue
                     print_to_csv(f"Retry {retry + 1}/{page_retries} loading page {self.page_number}: {str(e)}")

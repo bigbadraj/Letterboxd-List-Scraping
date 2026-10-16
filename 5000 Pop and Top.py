@@ -1698,7 +1698,7 @@ class LetterboxdScraper:
         return u
 
     def _wait_for_full_listing_page(self, url: str, timeout: int = LISTING_POSTER_WAIT_TIMEOUT):
-        """Wait for a styled, complete page and snapshot its film links and titles."""
+        """Wait for all expected film links and snapshot their titles."""
         requested_path = urlparse(url).path.rstrip("/").lower()
         allowed_paths = {requested_path}
         if requested_path.endswith("/page/1"):
@@ -1709,18 +1709,6 @@ class LetterboxdScraper:
                 listing = current_driver.execute_script(
                     """
                     const path = location.pathname.replace(/\\/+$/, '').toLowerCase();
-                    const cssReady = document.readyState === 'complete'
-                        && Array.from(document.querySelectorAll('link[rel~="stylesheet"]'))
-                            .some(link => {
-                                try {
-                                    const url = new URL(link.href);
-                                    return url.hostname === 's.ltrbxd.com'
-                                        && /\\/static\\/css\\/main-[^/]+\\.css$/.test(url.pathname)
-                                        && !!link.sheet;
-                                } catch (_) {
-                                    return false;
-                                }
-                            });
                     const containers = Array.from(document.querySelectorAll('li.posteritem'));
                     const entries = containers.slice(0, arguments[0]).map(container => {
                         const component = container.querySelector('.react-component');
@@ -1738,11 +1726,15 @@ class LetterboxdScraper:
                                 ? image.alt.replace(/ poster$/i, '').trim() : null);
                         return href ? {path, url: new URL(href, location.href).href, title} : null;
                     }).filter(Boolean);
-                    return {path, entries, cssReady};
+                    return {
+                        path,
+                        entries,
+                        pageReady: document.readyState !== 'loading'
+                    };
                     """,
                     EXPECTED_LISTING_POSTERS_PER_PAGE,
                 )
-                if listing["path"] not in allowed_paths or not listing["cssReady"]:
+                if listing["path"] not in allowed_paths or not listing["pageReady"]:
                     return False
                 entries = listing["entries"]
                 film_paths = [
