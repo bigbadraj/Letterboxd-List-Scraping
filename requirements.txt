@@ -6,3 +6,4 @@ tqdm==4.70.0
 openpyxl==3.1.5
 beautifulsoup4
 pyautogui
+PyGithub

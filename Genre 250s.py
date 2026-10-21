@@ -1060,6 +1060,7 @@ def is_dead_driver_error(error: Exception) -> bool:
         'target window already closed',
         'no such window',
         'invalid session id',
+        'max retries exceeded with url: /session/',
     ))
 
 
@@ -1254,6 +1255,12 @@ class LetterboxdScraper:
         ):
             self._restart_driver(f"every {CHROME_RESTART_EVERY_PAGES} listing pages")
 
+    def _driver_process_exit_code(self) -> Optional[int]:
+        process = getattr(getattr(self.driver, 'service', None), 'process', None)
+        if process is None:
+            return None
+        return process.poll()
+
     def _find_elements_with_recovery(self, by, selector, film_url, field_name):
         """Retry one DOM lookup after replacing a dead ChromeDriver session."""
         try:
@@ -1362,6 +1369,8 @@ class LetterboxdScraper:
                     return containers
                 return False
             except Exception as error:
+                if self._driver_process_exit_code() is not None:
+                    raise
                 if is_network_error(error):
                     return False
                 raise
@@ -1376,6 +1385,10 @@ class LetterboxdScraper:
         except Exception as error:
             navigation_error = error
             print_to_csv(f"Listing navigation reported an error; waiting for the page to finish: {error}")
+            if self._driver_process_exit_code() is not None:
+                raise error
+            if not self.is_browser_responsive():
+                raise error
 
         try:
             containers = self._wait_for_listing_page(url, timeout)
@@ -1439,6 +1452,24 @@ class LetterboxdScraper:
         except Exception as error:
             navigation_error = error
             print_to_csv(f"Listing navigation reported an error; waiting for page {page_num}: {error}")
+            exit_code = self._driver_process_exit_code()
+            if exit_code is not None:
+                exit_reason = (
+                    "stack overflow"
+                    if (exit_code & 0xFFFFFFFF) == 0xC00000FD
+                    else "process exit"
+                )
+                print_to_csv(
+                    f"ChromeDriver {exit_reason} during page {page_num} navigation "
+                    f"(exit code 0x{exit_code & 0xFFFFFFFF:08X}); recovering immediately."
+                )
+                if not self.recover_browser():
+                    raise RuntimeError("Browser recovery failed") from error
+                navigation_error = None
+            elif not self.is_browser_responsive():
+                if not self.recover_browser():
+                    raise RuntimeError("Browser recovery failed") from error
+                navigation_error = None
 
         try:
             page_title = self.driver.title
@@ -1560,6 +1591,7 @@ class LetterboxdScraper:
 
             for retry in range(LISTING_PAGE_INNER_RETRIES):
                 last_error: Optional[Exception] = None
+                recovered_browser = False
                 try:
                     film_data_list, failure_reason = self._attempt_listing_page_cycle(page_num, url, cycle)
                     if failure_reason is None:
@@ -1578,11 +1610,17 @@ class LetterboxdScraper:
                     err = str(e).lower()
                     if "no such window" in err or "target window already closed" in err:
                         self._restart_driver("browser window closed during listing load")
+                        recovered_browser = True
                     elif not self.is_browser_responsive():
                         if not self.recover_browser():
                             return None, True
+                        recovered_browser = True
                     else:
                         print_to_csv(f"⚠️ Page {page_num} load error: {e}")
+
+                if recovered_browser:
+                    print_to_csv(f"Retrying page {page_num} immediately after browser recovery.")
+                    continue
 
                 delay = calculate_retry_delay(retry)
                 if last_error is not None and is_network_error(last_error):
@@ -1612,14 +1650,11 @@ class LetterboxdScraper:
             self._navigate_to_film(film_url)
             return self.driver.page_source
         except Exception as e:
-            err = str(e).lower()
-            if "no such window" in err or "target window already closed" in err:
-                self._restart_driver("browser window closed during film fetch")
-                try:
-                    self._navigate_to_film(film_url)
-                    return self.driver.page_source
-                except Exception:
-                    return None
+            if is_dead_driver_error(e):
+                print_to_csv("Dead ChromeDriver session during film fetch; restarting Chrome.")
+                self._restart_driver("dead session during film fetch")
+                self._navigate_to_film(film_url)
+                return self.driver.page_source
             return None
 
     @staticmethod
@@ -1633,6 +1668,17 @@ class LetterboxdScraper:
 
     def is_browser_responsive(self):
         """Check if the browser is still responsive by attempting a simple operation."""
+        exit_code = self._driver_process_exit_code()
+        if exit_code is not None:
+            exit_reason = (
+                "stack overflow"
+                if (exit_code & 0xFFFFFFFF) == 0xC00000FD
+                else "process exit"
+            )
+            print_to_csv(
+                f"ChromeDriver {exit_reason} (exit code 0x{exit_code & 0xFFFFFFFF:08X})."
+            )
+            return False
         try:
             _ = self.driver.current_url
             _ = self.driver.title
@@ -1650,8 +1696,20 @@ class LetterboxdScraper:
         self.recovery_attempts += 1
         wait_time = min(30, 5 + (self.recovery_attempts * 10))
         print_to_csv(f"🔄 Attempting browser recovery (attempt {self.recovery_attempts}/{self.max_recovery_attempts})...")
-        print_to_csv(f"⏳ Waiting {wait_time} seconds before attempting recovery...")
-        time.sleep(wait_time)
+        exit_code = self._driver_process_exit_code()
+        if exit_code is not None:
+            exit_reason = (
+                "stack overflow"
+                if (exit_code & 0xFFFFFFFF) == 0xC00000FD
+                else "process exit"
+            )
+            print_to_csv(
+                f"ChromeDriver {exit_reason} with code 0x{exit_code & 0xFFFFFFFF:08X}; "
+                "skipping recovery cooldown."
+            )
+        else:
+            print_to_csv(f"⏳ Waiting {wait_time} seconds before attempting recovery...")
+            time.sleep(wait_time)
 
         try:
             try:
@@ -2084,6 +2142,14 @@ class LetterboxdScraper:
                     except Exception as e:
                         runtime = None
                         print_to_csv(f"Error extracting runtime for {film_title}: {str(e)}")
+                        if is_dead_driver_error(e):
+                            print_to_csv(
+                                f"Dead ChromeDriver session during runtime extraction for {film_title}; "
+                                "restarting Chrome and reloading the film."
+                            )
+                            self._restart_driver("dead session during runtime extraction")
+                            self._navigate_to_film(film_url)
+                            continue
                 if runtime is None:
                     print_to_csv(f"⚠️ {film_title} skipped due to missing runtime")
                     if retry < movie_retries - 1:
@@ -2092,6 +2158,14 @@ class LetterboxdScraper:
                             self._navigate_to_film(film_url)
                         except Exception as e:
                             print_to_csv(f"Error reloading film page for {film_title}: {str(e)}")
+                            if is_dead_driver_error(e):
+                                print_to_csv(
+                                    f"Dead ChromeDriver session while reloading {film_title}; "
+                                    "restarting Chrome and reloading the film."
+                                )
+                                self._restart_driver("dead session while reloading film page")
+                                self._navigate_to_film(film_url)
+                                continue
                         time.sleep(2)
                         continue
                     self.rejected_movies_count += 1
@@ -2115,9 +2189,14 @@ class LetterboxdScraper:
                 self.process_movie_data(movie_data, display_title, film_url)
                 break
             except Exception as e:
-                err = str(e).lower()
-                if "no such window" in err or "target window already closed" in err:
-                    self._restart_driver("browser window closed during movie processing")
+                if is_dead_driver_error(e):
+                    print_to_csv(
+                        f"Dead ChromeDriver session while processing {film_title}; "
+                        "restarting Chrome and reloading the film."
+                    )
+                    self._restart_driver("dead session during movie processing")
+                    self._navigate_to_film(film_url)
+                    continue
                 if retry == movie_retries - 1:
                     print_to_csv(f"❌ Failed to process movie after {movie_retries} attempts: {str(e)}")
                     self._record_rejection(film_title, release_year, None, f'Error: {str(e)}')

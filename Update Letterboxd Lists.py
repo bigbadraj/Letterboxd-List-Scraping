@@ -1,4 +1,5 @@
 import ast
+import re
 import sys
 import time
 from selenium import webdriver
@@ -433,6 +434,15 @@ def wait_for_list_editor(driver, timeout=45):
     WebDriverWait(driver, timeout, poll_frequency=0.5).until(editor_is_ready)
 
 
+def _normalize_list_editor_path(path):
+    """Normalize the count in a Letterboxd top-N list slug."""
+    return re.sub(
+        r"(?<=/)((?:the-)?top-)\d+",
+        r"\1{count}",
+        path.rstrip("/").lower(),
+    )
+
+
 def navigate_to_list_editor(driver, edit_url, log_and_print_func, timeout=45):
     """Wait for the styled editor, including when navigation reports a transient error."""
     requested_path = urlparse(edit_url).path.rstrip("/").lower()
@@ -448,7 +458,8 @@ def navigate_to_list_editor(driver, edit_url, log_and_print_func, timeout=45):
             try:
                 current_path = urlparse(current_driver.current_url).path.rstrip("/").lower()
                 return (
-                    current_path == requested_path
+                    _normalize_list_editor_path(current_path)
+                    == _normalize_list_editor_path(requested_path)
                     and _letterboxd_main_stylesheet_is_ready(current_driver)
                     and _has_import_button(current_driver)
                 )
@@ -1103,9 +1114,9 @@ def update_letterboxd_lists():
         "africa_top_movies": "https://letterboxd.com/bigbadraj/list/top-100-highest-rated-african-narrative-feature/edit/",
         "oceania_top_movies": "https://letterboxd.com/bigbadraj/list/top-75-highest-rated-australian-narrative-1/edit/",
         "90_Minutes_or_Less_top_movies": "https://letterboxd.com/bigbadraj/list/the-top-250-highest-rated-films-of-90-minutes/edit/",
-        "2_Hours_or_Less_top_movies": "https://letterboxd.com/bigbadraj/list/the-top-250-highest-rated-films-of-120-minutes/edit/",
-        "3_Hours_or_Greater_top_movies": "https://letterboxd.com/bigbadraj/list/the-top-150-highest-rated-films-of-180-minutes/edit/",
-        "4_Hours_or_Greater_top_movies": "https://letterboxd.com/bigbadraj/list/the-top-20-highest-rated-films-of-240-minutes/edit/",
+        "2_Hours_or_Less_top_movies": "https://letterboxd.com/bigbadraj/list/the-top-250-highest-rated-films-of-2-hours/edit/",
+        "3_Hours_or_Greater_top_movies": "https://letterboxd.com/bigbadraj/list/the-top-150-highest-rated-films-of-3-hours/edit/",
+        "4_Hours_or_Greater_top_movies": "https://letterboxd.com/bigbadraj/list/the-top-25-highest-rated-films-of-4-hours/edit/",
         "top_250_action_popular": "https://letterboxd.com/bigbadraj/list/top-250-most-popular-action-narrative-feature/edit/",
         "top_250_adventure_popular": "https://letterboxd.com/bigbadraj/list/top-250-most-popular-adventure-narrative/edit/",
         "top_250_animation_popular": "https://letterboxd.com/bigbadraj/list/top-250-most-popular-animation-narrative/edit/",
@@ -1135,9 +1146,9 @@ def update_letterboxd_lists():
         "africa_pop_movies": "https://letterboxd.com/bigbadraj/list/top-20-most-popular-african-narrative-feature/edit/",
         "oceania_pop_movies": "https://letterboxd.com/bigbadraj/list/top-150-most-popular-australian-narrative/edit/",
         "90_Minutes_or_Less_pop_movies": "https://letterboxd.com/bigbadraj/list/the-top-250-most-popular-films-of-90-minutes/edit/",
-        "2_Hours_or_Less_pop_movies": "https://letterboxd.com/bigbadraj/list/the-top-250-most-popular-films-of-120-minutes/edit/",
-        "3_Hours_or_Greater_pop_movies": "https://letterboxd.com/bigbadraj/list/the-top-75-most-popular-films-of-180-minutes/edit/",
-        "4_Hours_or_Greater_pop_movies": "https://letterboxd.com/bigbadraj/list/the-top-5-most-popular-films-of-240-minutes/edit/",
+        "2_Hours_or_Less_pop_movies": "https://letterboxd.com/bigbadraj/list/the-top-250-most-popular-films-of-2-hours/edit/",
+        "3_Hours_or_Greater_pop_movies": "https://letterboxd.com/bigbadraj/list/the-top-75-most-popular-films-of-3-hours/edit/",
+        "4_Hours_or_Greater_pop_movies": "https://letterboxd.com/bigbadraj/list/the-top-5-most-popular-films-of-4-hours-or/edit/",
     }
 
     personal_lists = {
@@ -1154,8 +1165,8 @@ def update_letterboxd_lists():
         "Personal_nightmare_on_elm_street_movies_ranked": "https://letterboxd.com/bigbadraj/list/nightmare-on-elm-street-movies-ranked/edit/",
         "Personal_hannibal_movies_ranked": "https://letterboxd.com/bigbadraj/list/hannibal-movies-ranked/edit/",
         "Personal_marvel_movies_ranked": "https://letterboxd.com/bigbadraj/list/marvel-movies-ranked/edit/",
-        "Personal_superhero_movies_ranked_1": "https://letterboxd.com/bigbadraj/list/superhero-movies-ranked-1/edit/",
-        "Personal_dc_movies_ranked_1": "https://letterboxd.com/bigbadraj/list/dc-movies-ranked-1/edit/",
+        "Personal_superhero_movies_ranked_1": "https://letterboxd.com/bigbadraj/list/superhero-ranked/edit/",
+        "Personal_dc_movies_ranked_1": "https://letterboxd.com/bigbadraj/list/dc-ranked/edit/",
         "Personal_a24_ranked_1": "https://letterboxd.com/bigbadraj/list/a24-ranked-1/edit/",
         "Personal_pixar_ranked": "https://letterboxd.com/bigbadraj/list/pixar-ranked/edit/",
         "Personal_best_picture_winners_ranked": "https://letterboxd.com/bigbadraj/list/best-picture-winners-ranked/edit/"
