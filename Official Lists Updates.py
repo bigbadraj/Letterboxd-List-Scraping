@@ -421,7 +421,7 @@ def stats_html_full(
         eligibility = (
             "<b>Eligibility rules:</b>\n"
             "•\xa0There is a 5,000 minimum ratings threshold.\n"
-            "•\xa0Films must be feature-length (more than 40 minutes long, but below 100 minutes long) "
+            "•\xa0Films must be feature-length (at least 41 minutes long, but below 100 minutes long) "
             "with a festival premiere, theatrical distribution or professional streaming release.\n"
             "•\xa0This list excludes: documentaries of any kind, self-released web videos, DTV films, "
             "recap or recut films, theatre or stage shows, TV series or TV movies, specials or episodes."
@@ -432,7 +432,7 @@ def stats_html_full(
         eligibility = (
             "<b>Eligibility rules:</b>\n"
             "•\xa0There is a 1,000 minimum ratings threshold.\n"
-            "•\xa0The special must be at least 40 minutes in runtime and released as a singular "
+            "•\xa0The special must be at least 41 minutes in runtime and released as a singular "
             "piece, not as a part of a series.\n"
             "•\xa0The special must be a recording of a live performance (exceptions can be made due "
             "to Covid or similar circumstances making live shows impossible) and must be performed "

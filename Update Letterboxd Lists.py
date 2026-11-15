@@ -23,6 +23,8 @@ import traceback
 from credentials_loader import load_credentials
 from urllib.parse import urlparse
 
+BETTERBOXD_PROMOTION = """<a href="https://chromewebstore.google.com/detail/letterboxd-additional-ico/bpmhfebcjcmagfkibeakpicclbcbnjaf?authuser=0&hl=en" target="_blank" rel="noopener noreferrer">Want to see this list as an icon on its film's pages (like with the top 500 films)? Check out the Betterboxd Chrome Extension!</a>"""
+
 
 def load_scraper_limits():
     """Read CSV output limits from their respective scraper scripts."""
@@ -1176,15 +1178,15 @@ def update_letterboxd_lists():
     lists_with_descriptions = {
         "film_titles": {
             "url": "https://letterboxd.com/bigbadraj/list/top-250-highest-rated-things-on-letterboxd/edit/",
-            "description": "Minimum 1,000 ratings. Otherwise, anything on Letterboxd is eligible.\n\nLast Updated: {date}\n\n<a href=https://letterboxd.com/bigbadraj/list/the-official-list-index/> Check out more of the lists I update regularly! </a>"
+            "description": "Minimum 1,000 ratings. Otherwise, anything on Letterboxd is eligible.\n\nLast Updated: {date}\n\n" + BETTERBOXD_PROMOTION + "\n\n<a href=https://letterboxd.com/bigbadraj/list/the-official-list-index/> Check out more of the lists I update regularly! </a>"
         },
         "box_office_real": {
             "url": "https://letterboxd.com/bigbadraj/list/top-250-highest-grossing-movies-of-all-time-1/edit/",
-            "description": "According to Box Office Mojo.\n\nLast Updated: {date}\n\n<a href=https://letterboxd.com/bigbadraj/list/the-official-list-index/> Check out more of the lists I update regularly! </a>"
+            "description": "According to Box Office Mojo.\n\nLast Updated: {date}\n\n" + BETTERBOXD_PROMOTION + "\n\n<a href=https://letterboxd.com/bigbadraj/list/the-official-list-index/> Check out more of the lists I update regularly! </a>"
         },
         "box_office_inflated": {
             "url": "https://letterboxd.com/bigbadraj/list/top-250-highest-grossing-domestic-movies/edit/",
-            "description": "According to Box Office Mojo.\n\nLast Updated: {date}\n\n<a href=https://letterboxd.com/bigbadraj/list/the-official-list-index/> Check out more of the lists I update regularly! </a>"
+            "description": "According to Box Office Mojo.\n\nLast Updated: {date}\n\n" + BETTERBOXD_PROMOTION + "\n\n<a href=https://letterboxd.com/bigbadraj/list/the-official-list-index/> Check out more of the lists I update regularly! </a>"
         }
     }
 

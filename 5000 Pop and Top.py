@@ -24,6 +24,8 @@ from urllib.parse import urljoin, urlparse
 from selenium.common.exceptions import NoSuchElementException
 from credentials_loader import load_credentials
 
+BETTERBOXD_PROMOTION = """<a href="https://chromewebstore.google.com/detail/letterboxd-additional-ico/bpmhfebcjcmagfkibeakpicclbcbnjaf?authuser=0&hl=en" target="_blank" rel="noopener noreferrer">Want to see this list as an icon on its film's pages (like with the top 500 films)? Check out the Betterboxd Chrome Extension!</a>"""
+
 # Silence undetected_chromedriver's noisy __del__ that logs WinError 6 on shutdown
 try:
     uc.Chrome.__del__ = lambda self: None
@@ -2249,7 +2251,7 @@ class LetterboxdScraper:
                 info = {}
                 
             film_title = info.get('Title') or film_title  # Use provided title if info doesn't have it
-            release_year = info.get('Year')  # Only for display purposes
+            release_year = info.get('Year') or release_year  # Only for display purposes
             tmdb_id = info.get('tmdbID')  # Only for display purposes
             
             # Check if URL has already been processed in this scrape session
@@ -2270,6 +2272,23 @@ class LetterboxdScraper:
                     'Title', 'Year', 'Runtime', 'RatingCount',
                     'Languages', 'Countries', 'Directors', 'Genres', 'Studios', 'Actors'
                 ]
+                cached_runtime = info.get('Runtime')
+                if isinstance(cached_runtime, (int, float)) and cached_runtime < MIN_RUNTIME:
+                    reason = 'Insufficient runtime (< 40 minutes)'
+                    print_to_csv(f"❌ {film_title} was not added due to insufficient runtime: {cached_runtime} minutes.")
+                    self.processor.rejected_data.append([film_title, release_year, None, reason])
+                    self.processor.add_to_blacklist(film_title, release_year, reason, film_url)
+                    self.rejected_movies_count += 1
+                    return False
+
+                recheck_boundary_runtime = cached_runtime == MIN_RUNTIME
+                if recheck_boundary_runtime:
+                    if not self.processor.update_whitelist(film_title, release_year, {}, film_url, quiet=True):
+                        print_to_csv(f"❌ Could not clear whitelist information for {film_title}; skipping.")
+                        return False
+                    self.processor.flush_whitelist()
+                    info = {}
+
                 missing_fields = [field for field in required_fields if not info.get(field)]
                 force_refresh_for_official = False
                 try:
@@ -2291,7 +2310,7 @@ class LetterboxdScraper:
                     force_refresh_for_official = False
 
                 refreshed_info = None
-                if info == {} or missing_fields or force_refresh_for_official:
+                if info == {} or missing_fields or force_refresh_for_official or recheck_boundary_runtime:
                     try:
                         if force_refresh_for_official and info != {} and not missing_fields:
                             print_to_csv(
@@ -2312,13 +2331,33 @@ class LetterboxdScraper:
                         if refreshed_info:
                             refreshed_info['Title'] = film_title
                             refreshed_info['Link'] = film_url
+                            refreshed_runtime = refreshed_info.get('Runtime')
+                            if refreshed_runtime is None:
+                                print_to_csv(f"⚠️ {film_title} skipped because the refreshed runtime is missing.")
+                                return False
+                            if refreshed_runtime < MIN_RUNTIME:
+                                reason = 'Insufficient runtime (< 40 minutes)'
+                                print_to_csv(f"❌ {film_title} was not added due to insufficient runtime: {refreshed_runtime} minutes.")
+                                self.processor.rejected_data.append([film_title, release_year, None, reason])
+                                self.processor.add_to_blacklist(film_title, release_year, reason, film_url)
+                                self.rejected_movies_count += 1
+                                return False
+                            if refreshed_runtime == MIN_RUNTIME:
+                                if not self.processor.update_whitelist(film_title, release_year, {}, film_url, quiet=True):
+                                    print_to_csv(f"❌ Could not clear whitelist information for {film_title}; skipping.")
+                                    return False
+                                self.processor.flush_whitelist()
+                                print_to_csv(f"⏭️ {film_title} is still exactly {MIN_RUNTIME} minutes; leaving its whitelist information blank and skipping.")
+                                return False
                             info = refreshed_info
                             release_year = info.get('Year') or release_year
-                            self.processor.update_whitelist(film_title, release_year, info, film_url)
+                            if not self.processor.update_whitelist(film_title, release_year, info, film_url):
+                                print_to_csv(f"❌ Could not update whitelist information for {film_title}; skipping.")
+                                return False
                     except Exception as e:
                         print_to_csv(f"Error collecting fresh data for {film_title}: {str(e)}")
 
-                if (info == {} or missing_fields or force_refresh_for_official) and refreshed_info is None:
+                if (info == {} or missing_fields or force_refresh_for_official or recheck_boundary_runtime) and refreshed_info is None:
                     try:
                         if force_refresh_for_official and info != {} and not missing_fields:
                             print_to_csv(
@@ -2500,14 +2539,36 @@ class LetterboxdScraper:
                             "Studios": movie_studios,
                             "Actors": movie_actors
                         }
+                        if runtime is None:
+                            print_to_csv(f"⚠️ {film_title} skipped because the refreshed runtime is missing.")
+                            return False
+                        if runtime < MIN_RUNTIME:
+                            reason = 'Insufficient runtime (< 40 minutes)'
+                            print_to_csv(f"❌ {film_title} was not added due to insufficient runtime: {runtime} minutes.")
+                            self.processor.rejected_data.append([film_title, release_year, None, reason])
+                            self.processor.add_to_blacklist(film_title, release_year, reason, film_url)
+                            self.rejected_movies_count += 1
+                            return False
+                        if runtime == MIN_RUNTIME:
+                            if not self.processor.update_whitelist(film_title, release_year, {}, film_url, quiet=True):
+                                print_to_csv(f"❌ Could not clear whitelist information for {film_title}; skipping.")
+                                return False
+                            self.processor.flush_whitelist()
+                            print_to_csv(f"⏭️ {film_title} is still exactly {MIN_RUNTIME} minutes; leaving its whitelist information blank and skipping.")
+                            return False
                         
-                        # Update whitelist with fresh data
-                        self.processor.update_whitelist(film_title, release_year, info, film_url)
+                        if not self.processor.update_whitelist(film_title, release_year, info, film_url):
+                            print_to_csv(f"❌ Could not update whitelist information for {film_title}; skipping.")
+                            return False
                     except Exception as e:
                         print_to_csv(f"Error collecting fresh data for {film_title}: {str(e)}")
                         self.processor.rejected_data.append([film_title, release_year, None, f'Error collecting data: {str(e)}'])
                         return False
                 
+                if not info:
+                    print_to_csv(f"⚠️ Fresh whitelist information could not be collected for {film_title}; skipping.")
+                    return False
+
                 # Process the whitelist information regardless of MAX_MOVIES_5000 limit
                 self.processor.process_whitelist_info(info, film_url)
                 if override_mode == 'official':
@@ -2928,12 +2989,13 @@ class LetterboxdScraper:
             else:
                 file.write(f"<strong>The Top {len(max_movies_5000_stats['film_data'])} Highest Rated Narrative Feature Films on Letterboxd.</strong>\n\n")
             file.write(f"<strong>Last updated: {formatted_date}</strong>\n\n")
+            file.write(f"{BETTERBOXD_PROMOTION}\n\n")
             file.write("<a href=https://letterboxd.com/bigbadraj/list/the-official-list-index/> Check out more of the lists I update regularly!</a>\n\n")
             
             # Write eligibility criteria
             file.write("<strong>Film eligibility criteria:</strong>\n")
             file.write("-- Must have a minimum of 1,000 ratings on Letterboxd.\n")
-            file.write("-- Cannot be a short film (minimum 40 minutes).\n")
+            file.write("-- Cannot be a short film (minimum 41 minutes).\n")
             file.write("-- Cannot be a television miniseries.\n")
             file.write("-- Cannot be a compilation of short serials.\n")
             file.write("-- Cannot be a documentary.\n")
@@ -3024,10 +3086,11 @@ class LetterboxdScraper:
                         else:
                             file.write(f"<strong>The Top {len(top_data)} Highest Rated Films from {'Australia' if continent == 'Oceania' else continent}</strong>\n\n")
                         file.write(f"<strong>Last updated: {formatted_date}</strong>\n\n")
+                        file.write(f"{BETTERBOXD_PROMOTION}\n\n")
                         file.write("<a href=https://letterboxd.com/bigbadraj/list/the-official-list-index/> Check out more of the lists I update regularly! </a>\n\n")
                         file.write("<strong>Film eligibility criteria:</strong>\n")
                         file.write("-- Must have a minimum of 1,000 ratings on Letterboxd.\n")
-                        file.write("-- Cannot be a short film (minimum 40 minutes).\n")
+                        file.write("-- Cannot be a short film (minimum 41 minutes).\n")
                         file.write("-- Cannot be a television miniseries.\n")
                         file.write("-- Cannot be a compilation of short serials.\n")
                         file.write("-- Cannot be a documentary.\n")
@@ -3263,10 +3326,11 @@ class LetterboxdScraper:
                 else:
                     file.write(f"<strong>The {len(top_data)} Highest Rated {rating}-Rated Movies On Letterboxd, as defined by Letterboxd.</strong>\n\n")
                 file.write(f"<strong>Last updated: {formatted_date}</strong>\n\n")
+                file.write(f"{BETTERBOXD_PROMOTION}\n\n")
                 file.write("<a href=https://letterboxd.com/bigbadraj/list/the-official-list-index/> Check out more of the lists I update regularly! </a>\n\n")
                 file.write("<strong>Film eligibility criteria:</strong>\n")
                 file.write("-- Must have a minimum of 1,000 ratings on Letterboxd.\n")
-                file.write("-- Cannot be a short film (minimum 40 minutes).\n")
+                file.write("-- Cannot be a short film (minimum 41 minutes).\n")
                 file.write("-- Cannot be a television miniseries.\n")
                 file.write("-- Cannot be a compilation of short serials.\n")
                 file.write("-- Cannot be a documentary.\n")
@@ -3421,10 +3485,11 @@ class LetterboxdScraper:
                         else:
                             file.write(f"<strong>The {len(top_data)} Highest Rated {display_category} Movies On Letterboxd</strong>\n\n")
                         file.write(f"<strong>Last updated: {formatted_date}</strong>\n\n")
+                        file.write(f"{BETTERBOXD_PROMOTION}\n\n")
                         file.write("<a href=https://letterboxd.com/bigbadraj/list/the-official-list-index/> Check out more of the lists I update regularly! </a>\n\n")
                         file.write("<strong>Film eligibility criteria:</strong>\n")
                         file.write("-- Must have a minimum of 1,000 ratings on Letterboxd.\n")
-                        file.write("-- Cannot be a short film (minimum 40 minutes).\n")
+                        file.write("-- Cannot be a short film (minimum 41 minutes).\n")
                         file.write("-- Cannot be a television miniseries.\n")
                         file.write("-- Cannot be a compilation of short serials.\n")
                         file.write("-- Cannot be a documentary.\n")
