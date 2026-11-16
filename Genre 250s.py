@@ -1839,7 +1839,7 @@ class LetterboxdScraper:
                 return False
                 
             film_title = info.get('Title') or film_title  # Only for display purposes
-            release_year = info.get('Year') or release_year  # Only for display purposes
+            release_year = info.get('Year')  # Only for display purposes
             tmdb_id = info.get('tmdbID')  # Only for display purposes
             
             # Check if URL has already been processed in this scrape session
